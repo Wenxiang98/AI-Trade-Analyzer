@@ -231,7 +231,7 @@ function TradeDesk({ session, profile, onSignOut }) {
         {tab === 'analyzer' && <Analyzer capital={capital} />}
         {tab === 'portfolio' && <Portfolio holdings={holdings} setHoldings={setHoldings} cash={cash} setCash={setCash} />}
         {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
-        {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} />}
+        {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} userName={userName} />}
         {tab === 'journal' && <Journal trades={trades} setTrades={setTrades} />}
       </main>
 
@@ -771,7 +771,7 @@ function Sizing({ capital, setCapital, riskPct, setRiskPct }) {
 }
 
 // ===== CHAT =====
-function Chat({ holdings, capital, cash }) {
+function Chat({ holdings, capital, cash, userName = 'Trader' }) {
   const [messages, setMessages] = useState([{ role: 'assistant', content: `Hey ${userName}. I'm your AI trading analyst. I know your portfolio and capital. Ask me anything — about a stock, a strategy, or just bounce ideas.` }]);
   const [input, setInput] = useState(''); const [loading, setLoading] = useState(false);
   const scrollRef = useRef(null);
