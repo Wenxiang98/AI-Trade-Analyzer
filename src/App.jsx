@@ -32,9 +32,18 @@ const storage = {
   }
 };
 
+// ===== CLAUDE MODELS =====
+const CLAUDE_MODELS = [
+  { id: 'claude-haiku-3-5-20241022',  label: 'Haiku 3.5',  badge: 'Cheapest',  color: '#10b981' },
+  { id: 'claude-sonnet-4-20250514',   label: 'Sonnet 4',   badge: 'Balanced',  color: '#3b82f6' },
+  { id: 'claude-opus-4-5',            label: 'Opus 4',     badge: 'Smartest',  color: '#a855f7' },
+];
+const DEFAULT_MODEL = 'claude-haiku-3-5-20241022';
+
 // ===== CLAUDE API =====
 async function callClaude(prompt, maxTokens = 1500, apiKey = null) {
-  const key = apiKey || localStorage.getItem('anthropic_api_key');
+  const key   = apiKey || localStorage.getItem('anthropic_api_key');
+  const model = localStorage.getItem('claude_model') || DEFAULT_MODEL;
   if (!key) {
     throw new Error('API key not set. Click the gear icon to add your Anthropic API key.');
   }
@@ -48,7 +57,7 @@ async function callClaude(prompt, maxTokens = 1500, apiKey = null) {
       'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model,
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
     }),
@@ -246,12 +255,14 @@ function TradeDesk({ session, profile, onSignOut }) {
 
 // ===== SETTINGS MODAL =====
 function SettingsModal({ onClose }) {
-  const [apiKey, setApiKey] = useState(localStorage.getItem('anthropic_api_key') || '');
-  const [saved, setSaved] = useState(false);
+  const [apiKey,       setApiKey]       = useState(localStorage.getItem('anthropic_api_key') || '');
+  const [selectedModel, setSelectedModel] = useState(localStorage.getItem('claude_model') || DEFAULT_MODEL);
+  const [saved,        setSaved]        = useState(false);
 
   const save = async () => {
     const trimmed = apiKey.trim();
     localStorage.setItem('anthropic_api_key', trimmed);
+    localStorage.setItem('claude_model', selectedModel);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) await updateApiKey(user.id, trimmed);
@@ -267,7 +278,9 @@ function SettingsModal({ onClose }) {
           <h2 className="serif text-lg font-semibold">Settings</h2>
           <button onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="space-y-3">
+        <div className="space-y-4">
+
+          {/* API Key */}
           <div>
             <label className="text-xs mono uppercase" style={{ color: COLORS.textDim }}>Anthropic API Key</label>
             <input
@@ -278,12 +291,46 @@ function SettingsModal({ onClose }) {
               className="block w-full mt-1 px-3 py-2 rounded mono text-sm outline-none"
               style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
             />
-            <p className="text-[11px] mt-2" style={{ color: COLORS.textDim }}>
-              Get yours at <a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" style={{ color: COLORS.green }}>console.anthropic.com</a>. Stored locally in your browser only.
+            <p className="text-[11px] mt-1" style={{ color: COLORS.textDim }}>
+              Get yours at <a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" style={{ color: COLORS.blue }}>console.anthropic.com</a> · Stored securely in Supabase
             </p>
           </div>
-          <button onClick={save} className="w-full py-2 rounded font-semibold" style={{ background: COLORS.green, color: '#000' }}>
-            {saved ? '✓ Saved' : 'Save'}
+
+          {/* Model Selector */}
+          <div>
+            <label className="text-xs mono uppercase" style={{ color: COLORS.textDim }}>Claude Model</label>
+            <div className="flex flex-col gap-2 mt-2">
+              {CLAUDE_MODELS.map(m => (
+                <button
+                  key={m.id}
+                  onClick={() => setSelectedModel(m.id)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '0.6rem 0.75rem', borderRadius: '8px', cursor: 'pointer',
+                    background: selectedModel === m.id ? COLORS.panelLight : 'transparent',
+                    border: `1px solid ${selectedModel === m.id ? m.color : COLORS.border}`,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <div style={{ width: 8, height: 8, borderRadius: '50%', background: m.color }} />
+                    <span style={{ color: COLORS.text, fontSize: '0.875rem', fontWeight: 500 }}>{m.label}</span>
+                  </div>
+                  <span style={{
+                    fontSize: '0.7rem', fontWeight: 600, padding: '2px 8px', borderRadius: '99px',
+                    background: selectedModel === m.id ? m.color + '22' : 'transparent',
+                    color: m.color, border: `1px solid ${m.color}44`,
+                  }}>{m.badge}</span>
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] mt-1" style={{ color: COLORS.textDim }}>
+              Haiku 3.5 is ~10× cheaper than Sonnet · Recommended for daily use
+            </p>
+          </div>
+
+          <button onClick={save} className="w-full py-2 rounded font-semibold text-sm" style={{ background: COLORS.green, color: '#000' }}>
+            {saved ? '✓ Saved!' : 'Save Settings'}
           </button>
         </div>
       </div>
