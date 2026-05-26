@@ -788,7 +788,7 @@ function Chat({ holdings, capital, cash, userName = 'Trader' }) {
 CONTEXT: Capital RM${capital}, Cash RM${cash}, Holdings: ${portfolioStr}. Markets: US ETFs (VOO/SPY), Bursa Malaysia. Early-stage trader. 2% risk per trade.
 
 CONVERSATION:
-${updated.map(m => `${m.role === 'user' ? 'WEN XIANG' : 'YOU'}: ${m.content}`).join('\n')}
+${updated.map(m => `${m.role === 'user' ? userName.toUpperCase() : 'YOU'}: ${m.content}`).join('\n')}
 
 Respond as analyst. Direct, specific, practical. No fluff. Under 200 words unless detail is essential.`;
       const result = await callClaude(context, 800);
