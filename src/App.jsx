@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings } from 'lucide-react';
+import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
+import { supabase, getProfile, updateApiKey } from './lib/supabase';
+import LoginScreen from './components/LoginScreen';
 
 const COLORS = {
   bg: '#0a0a0a',
@@ -31,9 +33,9 @@ const storage = {
 };
 
 // ===== CLAUDE API =====
-async function callClaude(prompt, maxTokens = 1500) {
-  const apiKey = localStorage.getItem('anthropic_api_key');
-  if (!apiKey) {
+async function callClaude(prompt, maxTokens = 1500, apiKey = null) {
+  const key = apiKey || localStorage.getItem('anthropic_api_key');
+  if (!key) {
     throw new Error('API key not set. Click the gear icon to add your Anthropic API key.');
   }
 
@@ -41,7 +43,7 @@ async function callClaude(prompt, maxTokens = 1500) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-api-key': apiKey,
+      'x-api-key': key,
       'anthropic-version': '2023-06-01',
       'anthropic-dangerous-direct-browser-access': 'true',
     },
@@ -77,13 +79,56 @@ function parseJSON(text) {
   }
 }
 
-// ===== MAIN APP =====
+// ===== AUTH WRAPPER =====
 export default function App() {
+  const [session, setSession] = useState(undefined);
+  const [profile, setProfile] = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      if (session) loadProfile(session.user.id);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (session) loadProfile(session.user.id);
+      else setProfile(null);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  async function loadProfile(userId) {
+    try {
+      const p = await getProfile(userId);
+      setProfile(p);
+      if (p?.anthropic_api_key) localStorage.setItem('anthropic_api_key', p.anthropic_api_key);
+    } catch {}
+  }
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    localStorage.removeItem('anthropic_api_key');
+  }
+
+  if (session === undefined) return (
+    <div style={{ minHeight: '100vh', background: '#0a0a0a', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <Loader2 size={32} color='#3b82f6' style={{ animation: 'spin 1s linear infinite' }} />
+      <style>{`@keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }`}</style>
+    </div>
+  );
+
+  if (!session) return <LoginScreen />;
+
+  return <TradeDesk session={session} profile={profile} onSignOut={handleSignOut} />;
+}
+
+// ===== TRADE DESK =====
+function TradeDesk({ session, profile, onSignOut }) {
+  const userName = profile?.name || session.user.email?.split('@')[0] || 'Trader';
+
   const [tab, setTab] = useState('dashboard');
-  const [holdings, setHoldings] = useState(() => storage.get('portfolio:holdings', [
-    { symbol: 'SUNREIT', qty: 300, avgCost: 2.16, currentPrice: 2.29, market: 'MYR' }
-  ]));
-  const [cash, setCash] = useState(() => storage.get('portfolio:cash', 3.54));
+  const [holdings, setHoldings] = useState(() => storage.get('portfolio:holdings', []));
+  const [cash, setCash] = useState(() => storage.get('portfolio:cash', 0));
   const [capital, setCapital] = useState(() => storage.get('settings:capital', 1000));
   const [riskPct, setRiskPct] = useState(() => storage.get('settings:riskPct', 2));
   const [trades, setTrades] = useState(() => storage.get('journal:trades', []));
@@ -128,8 +173,12 @@ export default function App() {
                 {positionPL >= 0 ? '▲' : '▼'} {positionPL >= 0 ? '+' : ''}{positionPL.toFixed(2)}
               </span>
             </div>
+            <span className="mono text-xs hidden md:inline" style={{ color: COLORS.textDim }}>{userName}</span>
             <button onClick={() => setShowSettings(true)} className="p-2 rounded" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
               <Settings size={14} />
+            </button>
+            <button onClick={onSignOut} className="p-2 rounded" title="Sign out" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+              <LogOut size={14} />
             </button>
           </div>
         </div>
@@ -178,7 +227,7 @@ export default function App() {
       </main>
 
       <footer className="max-w-7xl mx-auto px-4 py-6 text-[10px] text-center mono" style={{ color: COLORS.textDim }}>
-        BUILT FOR WEN XIANG · POWERED BY CLAUDE SONNET 4 · NOT FINANCIAL ADVICE
+        BUILT FOR {userName.toUpperCase()} · POWERED BY CLAUDE SONNET 4 · NOT FINANCIAL ADVICE
       </footer>
 
       {tab !== 'chat' && (
@@ -200,8 +249,13 @@ function SettingsModal({ onClose }) {
   const [apiKey, setApiKey] = useState(localStorage.getItem('anthropic_api_key') || '');
   const [saved, setSaved] = useState(false);
 
-  const save = () => {
-    localStorage.setItem('anthropic_api_key', apiKey.trim());
+  const save = async () => {
+    const trimmed = apiKey.trim();
+    localStorage.setItem('anthropic_api_key', trimmed);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) await updateApiKey(user.id, trimmed);
+    } catch {}
     setSaved(true);
     setTimeout(() => { setSaved(false); onClose(); }, 1000);
   };
@@ -671,7 +725,7 @@ function Sizing({ capital, setCapital, riskPct, setRiskPct }) {
 
 // ===== CHAT =====
 function Chat({ holdings, capital, cash }) {
-  const [messages, setMessages] = useState([{ role: 'assistant', content: `Hey Wen Xiang. I'm your AI trading analyst. I know your portfolio and capital. Ask me anything — about a stock, a strategy, or just bounce ideas.` }]);
+  const [messages, setMessages] = useState([{ role: 'assistant', content: `Hey ${userName}. I'm your AI trading analyst. I know your portfolio and capital. Ask me anything — about a stock, a strategy, or just bounce ideas.` }]);
   const [input, setInput] = useState(''); const [loading, setLoading] = useState(false);
   const scrollRef = useRef(null);
   useEffect(() => { scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight); }, [messages]);
@@ -683,7 +737,7 @@ function Chat({ holdings, capital, cash }) {
     setMessages(updated); setInput(''); setLoading(true);
     try {
       const portfolioStr = holdings.map(h => `${h.symbol}: ${h.qty} @ ${h.avgCost}, now ${h.currentPrice}`).join('; ') || 'None';
-      const context = `You are an experienced trading analyst advising Malaysian retail trader Wen Xiang.
+      const context = `You are an experienced trading analyst advising Malaysian retail trader ${userName}.
 CONTEXT: Capital RM${capital}, Cash RM${cash}, Holdings: ${portfolioStr}. Markets: US ETFs (VOO/SPY), Bursa Malaysia. Early-stage trader. 2% risk per trade.
 
 CONVERSATION:
