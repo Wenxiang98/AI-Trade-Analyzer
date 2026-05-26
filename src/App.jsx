@@ -40,6 +40,34 @@ const CLAUDE_MODELS = [
 ];
 const DEFAULT_MODEL = 'claude-haiku-4-5';
 
+// ===== BACKEND API =====
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
+
+async function fetchLivePrice(symbol) {
+  try {
+    const res = await fetch(`${API_BASE}/api/market/quote/${encodeURIComponent(symbol)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.error ? null : data;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchLivePrices(symbols) {
+  if (!symbols.length) return {};
+  try {
+    const res = await fetch(`${API_BASE}/api/market/quotes?symbols=${symbols.join(',')}`);
+    if (!res.ok) return {};
+    const list = await res.json();
+    const map = {};
+    list.forEach(p => { if (!p.error) map[p.symbol] = p; });
+    return map;
+  } catch {
+    return {};
+  }
+}
+
 // ===== CLAUDE API =====
 async function callClaude(prompt, maxTokens = 1500, apiKey = null) {
   const key   = apiKey || localStorage.getItem('anthropic_api_key');
@@ -142,12 +170,32 @@ function TradeDesk({ session, profile, onSignOut }) {
   const [riskPct, setRiskPct] = useState(() => storage.get('settings:riskPct', 2));
   const [trades, setTrades] = useState(() => storage.get('journal:trades', []));
   const [showSettings, setShowSettings] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => { storage.set('portfolio:holdings', holdings); }, [holdings]);
   useEffect(() => { storage.set('portfolio:cash', cash); }, [cash]);
   useEffect(() => { storage.set('settings:capital', capital); }, [capital]);
   useEffect(() => { storage.set('settings:riskPct', riskPct); }, [riskPct]);
   useEffect(() => { storage.set('journal:trades', trades); }, [trades]);
+
+  // ── Live price refresh ──────────────────────────────────────────────────────
+  const refreshPrices = async () => {
+    const symbols = holdings.map(h => h.symbol).filter(Boolean);
+    if (!symbols.length) return;
+    setRefreshing(true);
+    try {
+      const priceMap = await fetchLivePrices(symbols);
+      if (Object.keys(priceMap).length > 0) {
+        setHoldings(prev => prev.map(h => ({
+          ...h,
+          currentPrice: priceMap[h.symbol]?.price ?? h.currentPrice,
+        })));
+      }
+    } catch (e) {
+      console.error('Price refresh failed:', e);
+    }
+    setRefreshing(false);
+  };
 
   const portfolioValue = holdings.reduce((sum, h) => sum + h.qty * h.currentPrice, 0);
   const totalCost = holdings.reduce((sum, h) => sum + h.qty * h.avgCost, 0);
@@ -229,7 +277,7 @@ function TradeDesk({ session, profile, onSignOut }) {
       <main className="max-w-7xl mx-auto px-4 py-6">
         {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} />}
         {tab === 'analyzer' && <Analyzer capital={capital} />}
-        {tab === 'portfolio' && <Portfolio holdings={holdings} setHoldings={setHoldings} cash={cash} setCash={setCash} />}
+        {tab === 'portfolio' && <Portfolio holdings={holdings} setHoldings={setHoldings} cash={cash} setCash={setCash} refreshPrices={refreshPrices} refreshing={refreshing} />}
         {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
         {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} userName={userName} />}
         {tab === 'journal' && <Journal trades={trades} setTrades={setTrades} />}
@@ -500,7 +548,15 @@ Match Malaysian (Bursa) and US tickers. Be helpful with keywords like "tech etf"
   const analyzeticker = async (tk, name, market) => {
     setAnalyzing(true); setError(''); setAnalysis(null); setFallbackText(''); setSuggestions([]);
     try {
+      // Fetch live price from backend first (avoids stale AI training data)
+      const liveData = await fetchLivePrice(tk);
+      const livePriceLine = liveData
+        ? `LIVE MARKET DATA (fetched now): price=${liveData.price} ${liveData.currency}, change=${liveData.change} (${liveData.changePct}%). Use this exact price for all analysis — do NOT use your training data prices.`
+        : `Note: live price unavailable — use your best known price estimate.`;
+
       const prompt = `Analyze "${tk}" (${name || ''}, ${market || ''}) as a professional trading analyst.
+
+${livePriceLine}
 
 Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
 
@@ -509,13 +565,15 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
   "name": "full name",
   "market": "market",
   "sector": "sector",
+  "currentPrice": ${liveData?.price || 'null'},
+  "currency": "${liveData?.currency || 'USD'}",
   "verdict": "BUY|SELL|HOLD",
   "confidence": 7,
-  "summary": "two sentences",
-  "technical": {"trend":"...","momentum":"...","support":"...","resistance":"..."},
+  "summary": "two sentences referencing the current price",
+  "technical": {"trend":"...","momentum":"...","support":"price level","resistance":"price level"},
   "fundamental": "two sentences",
   "risks": ["r1","r2","r3"],
-  "tradePlan": {"entryZone":"...","stopLoss":"...","target":"...","positionSize":"RM amount for ${capital} at 2% risk","rationale":"one sentence"}
+  "tradePlan": {"entryZone":"price range","stopLoss":"price","target":"price","positionSize":"RM amount for ${capital} at 2% risk","rationale":"one sentence"}
 }`;
       const result = await callClaude(prompt, 2000);
       const parsed = parseJSON(result);
@@ -587,6 +645,11 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
               <div>
                 <div className="mono text-xs" style={{ color: COLORS.textDim }}>{analysis.market} · {analysis.sector}</div>
                 <div className="serif text-2xl font-bold mt-1">{analysis.ticker} <span className="text-base font-normal" style={{ color: COLORS.textDim }}>{analysis.name}</span></div>
+                {analysis.currentPrice && (
+                  <div className="mono text-sm mt-1 font-semibold" style={{ color: COLORS.green }}>
+                    {analysis.currency} {analysis.currentPrice} <span className="text-[10px] font-normal" style={{ color: COLORS.textDim }}>· live</span>
+                  </div>
+                )}
               </div>
               <div className="text-right">
                 <div className="serif text-4xl font-bold" style={{ color: verdictColor }}>{analysis.verdict}</div>
@@ -655,7 +718,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
 }
 
 // ===== PORTFOLIO =====
-function Portfolio({ holdings, setHoldings, cash, setCash }) {
+function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refreshing }) {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
 
@@ -676,10 +739,25 @@ function Portfolio({ holdings, setHoldings, cash, setCash }) {
   return (
     <div className="space-y-4">
       <Panel>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-3">
           <h2 className="serif text-lg font-semibold">Portfolio Manager</h2>
-          <button onClick={() => setShowAdd(!showAdd)} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded" style={{ background: COLORS.green, color: '#000' }}><Plus size={14} /> Add</button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={refreshPrices}
+              disabled={refreshing || holdings.length === 0}
+              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded disabled:opacity-40"
+              style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+              title="Fetch live prices from backend"
+            >
+              {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              <span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Live Prices'}</span>
+            </button>
+            <button onClick={() => setShowAdd(!showAdd)} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded" style={{ background: COLORS.green, color: '#000' }}><Plus size={14} /> Add</button>
+          </div>
         </div>
+        <p className="text-[11px] mb-3" style={{ color: COLORS.textDim }}>
+          💡 US stocks: ticker (VOO, SPY, AAPL). Bursa MY: 4-digit code + .KL — <span className="mono">1155.KL</span> Maybank · <span className="mono">5176.KL</span> Sunway REIT · <span className="mono">1295.KL</span> Public Bank · <span className="mono">1023.KL</span> CIMB
+        </p>
         <div className="mb-4">
           <label className="text-xs mono" style={{ color: COLORS.textDim }}>CASH (RM)</label>
           <input type="number" value={cash} onChange={e => setCash(parseFloat(e.target.value) || 0)} className="block w-32 mt-1 px-2 py-1 rounded mono text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />

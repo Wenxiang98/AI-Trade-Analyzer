@@ -1,62 +1,46 @@
 package com.aitrade.controller;
 
-import org.springframework.security.core.Authentication;
+import com.aitrade.service.MarketDataService;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 
 @RestController
 @RequestMapping("/api/market")
 public class MarketDataController {
 
-    private final WebClient webClient;
+    private final MarketDataService marketDataService;
 
-    public MarketDataController(WebClient.Builder builder) {
-        this.webClient = builder.build();
+    public MarketDataController(MarketDataService marketDataService) {
+        this.marketDataService = marketDataService;
     }
 
     /**
-     * Fetch quote for a ticker.
-     * US stocks: VOO, SPY, AAPL
-     * Bursa Malaysia: append .KL — e.g. SUNREIT.KL, MAYBANK.KL
+     * Single quote.
+     * {symbol:.+} keeps dots in path variable (needed for SUNREIT.KL)
+     *
+     * GET /api/market/quote/VOO
+     * GET /api/market/quote/SUNREIT.KL
      */
-    @GetMapping("/quote/{symbol}")
-    public Mono<Map> getQuote(@PathVariable String symbol, Authentication auth) {
-        String url = "https://query1.finance.yahoo.com/v8/finance/chart/" + symbol
-                + "?interval=1d&range=1d";
-
-        return webClient.get()
-                .uri(url)
-                .header("User-Agent", "Mozilla/5.0")
-                .retrieve()
-                .bodyToMono(Map.class)
-                .map(raw -> extractQuote(raw, symbol));
+    @GetMapping("/quote/{symbol:.+}")
+    public Mono<Map<String, Object>> getQuote(@PathVariable String symbol) {
+        return marketDataService.fetchQuote(symbol.toUpperCase());
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> extractQuote(Map<?, ?> raw, String symbol) {
-        try {
-            var chart = (Map<?, ?>) raw.get("chart");
-            var result = (java.util.List<?>) chart.get("result");
-            var first = (Map<?, ?>) result.get(0);
-            var meta = (Map<String, Object>) first.get("meta");
-
-            double price  = ((Number) meta.get("regularMarketPrice")).doubleValue();
-            double prev   = ((Number) meta.get("chartPreviousClose")).doubleValue();
-            double change = price - prev;
-            double changePct = prev != 0 ? (change / prev) * 100 : 0;
-
-            return Map.of(
-                "symbol",    symbol,
-                "price",     price,
-                "change",    Math.round(change * 100.0) / 100.0,
-                "changePct", Math.round(changePct * 100.0) / 100.0,
-                "currency",  meta.getOrDefault("currency", "USD")
-            );
-        } catch (Exception e) {
-            return Map.of("symbol", symbol, "error", "Failed to fetch price");
-        }
+    /**
+     * Batch quotes for portfolio refresh.
+     * GET /api/market/quotes?symbols=SUNREIT.KL,VOO,MAYBANK.KL
+     */
+    @GetMapping("/quotes")
+    public Mono<List<Map<String, Object>>> getQuotes(@RequestParam String symbols) {
+        List<String> symbolList = Arrays.stream(symbols.split(","))
+                .map(String::trim)
+                .map(String::toUpperCase)
+                .filter(s -> !s.isEmpty())
+                .toList();
+        return marketDataService.fetchQuotes(symbolList);
     }
 }

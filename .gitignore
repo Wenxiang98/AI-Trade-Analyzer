@@ -9,3 +9,6 @@ dist-ssr
 .vscode/*
 !.vscode/extensions.json
 .idea
+
+# Backend — local dev config contains real API keys
+backend/src/main/resources/application-local.properties
