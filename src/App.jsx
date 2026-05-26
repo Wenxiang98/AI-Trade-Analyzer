@@ -34,9 +34,11 @@ const storage = {
 
 // ===== CLAUDE MODELS =====
 const CLAUDE_MODELS = [
-  { id: 'claude-sonnet-4-20250514',   label: 'Sonnet 4',   badge: 'Default',   color: '#3b82f6' },
+  { id: 'claude-haiku-4-5',  label: 'Haiku 4.5',  badge: '$1/MTok',    color: '#10b981' },
+  { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6', badge: '$3/MTok',    color: '#3b82f6' },
+  { id: 'claude-opus-4-7',   label: 'Opus 4.7',   badge: '$5/MTok',    color: '#a855f7' },
 ];
-const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
+const DEFAULT_MODEL = 'claude-haiku-4-5';
 
 // ===== CLAUDE API =====
 async function callClaude(prompt, maxTokens = 1500, apiKey = null) {
