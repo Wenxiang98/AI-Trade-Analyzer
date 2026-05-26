@@ -1,0 +1,823 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings } from 'lucide-react';
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
+
+const COLORS = {
+  bg: '#0a0a0a',
+  panel: '#141414',
+  panelLight: '#1a1a1a',
+  border: '#262626',
+  text: '#e5e5e5',
+  textDim: '#737373',
+  green: '#10b981',
+  red: '#ef4444',
+  amber: '#f59e0b',
+  blue: '#3b82f6',
+};
+
+const PIE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4'];
+
+// ===== STORAGE (localStorage for deployed app) =====
+const storage = {
+  get(key, fallback) {
+    try {
+      const v = localStorage.getItem(key);
+      return v ? JSON.parse(v) : fallback;
+    } catch { return fallback; }
+  },
+  set(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) { console.error(e); }
+  }
+};
+
+// ===== CLAUDE API =====
+async function callClaude(prompt, maxTokens = 1500) {
+  const apiKey = localStorage.getItem('anthropic_api_key');
+  if (!apiKey) {
+    throw new Error('API key not set. Click the gear icon to add your Anthropic API key.');
+  }
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`API error ${response.status}: ${errorText.slice(0, 200)}`);
+  }
+
+  const data = await response.json();
+  return data.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+}
+
+function parseJSON(text) {
+  if (!text) return null;
+  let cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1) return null;
+  let jsonStr = cleaned.slice(start, end + 1);
+  jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    console.error('JSON parse error:', e.message);
+    return null;
+  }
+}
+
+// ===== MAIN APP =====
+export default function App() {
+  const [tab, setTab] = useState('dashboard');
+  const [holdings, setHoldings] = useState(() => storage.get('portfolio:holdings', [
+    { symbol: 'SUNREIT', qty: 300, avgCost: 2.16, currentPrice: 2.29, market: 'MYR' }
+  ]));
+  const [cash, setCash] = useState(() => storage.get('portfolio:cash', 3.54));
+  const [capital, setCapital] = useState(() => storage.get('settings:capital', 1000));
+  const [riskPct, setRiskPct] = useState(() => storage.get('settings:riskPct', 2));
+  const [trades, setTrades] = useState(() => storage.get('journal:trades', []));
+  const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => { storage.set('portfolio:holdings', holdings); }, [holdings]);
+  useEffect(() => { storage.set('portfolio:cash', cash); }, [cash]);
+  useEffect(() => { storage.set('settings:capital', capital); }, [capital]);
+  useEffect(() => { storage.set('settings:riskPct', riskPct); }, [riskPct]);
+  useEffect(() => { storage.set('journal:trades', trades); }, [trades]);
+
+  const portfolioValue = holdings.reduce((sum, h) => sum + h.qty * h.currentPrice, 0);
+  const totalCost = holdings.reduce((sum, h) => sum + h.qty * h.avgCost, 0);
+  const positionPL = portfolioValue - totalCost;
+  const totalAssets = portfolioValue + cash;
+
+  const tabs = [
+    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'analyzer', label: 'Analyzer', icon: Search },
+    { id: 'portfolio', label: 'Portfolio', icon: Wallet },
+    { id: 'sizing', label: 'Sizing', icon: Calculator },
+    { id: 'chat', label: 'AI Chat', icon: MessageSquare },
+    { id: 'journal', label: 'Journal', icon: BookOpen },
+  ];
+
+  return (
+    <div className="min-h-screen text-neutral-200" style={{ background: COLORS.bg, fontFamily: 'system-ui, sans-serif' }}>
+      <header className="border-b sticky top-0 z-50 backdrop-blur" style={{ borderColor: COLORS.border, background: 'rgba(10,10,10,0.9)' }}>
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-2 h-2 rounded-full pulse-dot" style={{ background: COLORS.green }}></div>
+            <h1 className="serif text-xl font-bold tracking-tight">
+              <span style={{ color: COLORS.green }}>AI</span> Trade Desk
+            </h1>
+            <span className="mono text-[10px] px-2 py-0.5 rounded" style={{ background: COLORS.panelLight, color: COLORS.textDim }}>v1.0</span>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-3 mono text-xs" style={{ color: COLORS.textDim }}>
+              <span>NET</span>
+              <span className="font-bold" style={{ color: COLORS.text }}>RM {totalAssets.toFixed(2)}</span>
+              <span style={{ color: positionPL >= 0 ? COLORS.green : COLORS.red }}>
+                {positionPL >= 0 ? '▲' : '▼'} {positionPL >= 0 ? '+' : ''}{positionPL.toFixed(2)}
+              </span>
+            </div>
+            <button onClick={() => setShowSettings(true)} className="p-2 rounded" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+              <Settings size={14} />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+
+      <nav className="border-b sticky top-[57px] z-40" style={{ borderColor: COLORS.border, background: COLORS.bg }}>
+        <div className="max-w-7xl mx-auto px-4 flex overflow-x-auto scrollbar">
+          {tabs.map(t => {
+            const Icon = t.icon;
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className="flex items-center gap-2 px-4 py-3 text-sm whitespace-nowrap transition-all border-b-2"
+                style={{
+                  color: active ? COLORS.text : COLORS.textDim,
+                  borderColor: active ? COLORS.green : 'transparent',
+                  background: active ? COLORS.panel : 'transparent'
+                }}
+              >
+                <Icon size={14} />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      <div className="border-b" style={{ borderColor: COLORS.border, background: 'rgba(245, 158, 11, 0.05)' }}>
+        <div className="max-w-7xl mx-auto px-4 py-2 flex items-center gap-2 text-[11px]" style={{ color: COLORS.amber }}>
+          <AlertTriangle size={12} />
+          <span>AI analysis is based on general knowledge — not real-time data. Verify with live charts. Not financial advice.</span>
+        </div>
+      </div>
+
+      <main className="max-w-7xl mx-auto px-4 py-6">
+        {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} />}
+        {tab === 'analyzer' && <Analyzer capital={capital} />}
+        {tab === 'portfolio' && <Portfolio holdings={holdings} setHoldings={setHoldings} cash={cash} setCash={setCash} />}
+        {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
+        {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} />}
+        {tab === 'journal' && <Journal trades={trades} setTrades={setTrades} />}
+      </main>
+
+      <footer className="max-w-7xl mx-auto px-4 py-6 text-[10px] text-center mono" style={{ color: COLORS.textDim }}>
+        BUILT FOR WEN XIANG · POWERED BY CLAUDE SONNET 4 · NOT FINANCIAL ADVICE
+      </footer>
+
+      {tab !== 'chat' && (
+        <button
+          onClick={() => setTab('chat')}
+          className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-full shadow-2xl transition-transform hover:scale-105"
+          style={{ background: COLORS.green, color: '#000', boxShadow: '0 8px 24px rgba(16, 185, 129, 0.4)' }}
+        >
+          <MessageSquare size={18} />
+          <span className="text-sm font-semibold hidden sm:inline">Ask AI</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ===== SETTINGS MODAL =====
+function SettingsModal({ onClose }) {
+  const [apiKey, setApiKey] = useState(localStorage.getItem('anthropic_api_key') || '');
+  const [saved, setSaved] = useState(false);
+
+  const save = () => {
+    localStorage.setItem('anthropic_api_key', apiKey.trim());
+    setSaved(true);
+    setTimeout(() => { setSaved(false); onClose(); }, 1000);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.8)' }}>
+      <div className="w-full max-w-md rounded-lg p-5" style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="serif text-lg font-semibold">Settings</h2>
+          <button onClick={onClose}><X size={18} /></button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs mono uppercase" style={{ color: COLORS.textDim }}>Anthropic API Key</label>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              placeholder="sk-ant-..."
+              className="block w-full mt-1 px-3 py-2 rounded mono text-sm outline-none"
+              style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+            />
+            <p className="text-[11px] mt-2" style={{ color: COLORS.textDim }}>
+              Get yours at <a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" style={{ color: COLORS.green }}>console.anthropic.com</a>. Stored locally in your browser only.
+            </p>
+          </div>
+          <button onClick={save} className="w-full py-2 rounded font-semibold" style={{ background: COLORS.green, color: '#000' }}>
+            {saved ? '✓ Saved' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ===== DASHBOARD =====
+function Dashboard({ holdings, cash, totalAssets, positionPL, portfolioValue, setTab }) {
+  const [insight, setInsight] = useState('');
+  const [loadingInsight, setLoadingInsight] = useState(false);
+  const [error, setError] = useState('');
+
+  const generateInsight = async () => {
+    setLoadingInsight(true);
+    setError('');
+    try {
+      const portfolioStr = holdings.map(h => `${h.symbol} (${h.qty} units @ avg ${h.avgCost})`).join(', ') || 'None';
+      const prompt = `You are an experienced market analyst writing a "thought of the day" for a Malaysian retail trader.
+Their portfolio: ${portfolioStr}. Total assets: RM${totalAssets.toFixed(2)}.
+Write a short (3-4 sentences) sharp market insight focused on: market sentiment context, one observation about their holdings or sectors, and one actionable consideration. Be specific, avoid generic advice. No greetings. No disclaimers.`;
+      const result = await callClaude(prompt, 400);
+      setInsight(result);
+    } catch (e) {
+      setError(e.message);
+    }
+    setLoadingInsight(false);
+  };
+
+  const pieData = holdings.map(h => ({ name: h.symbol, value: h.qty * h.currentPrice }));
+  if (cash > 0) pieData.push({ name: 'Cash', value: cash });
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="Total Assets" value={`RM ${totalAssets.toFixed(2)}`} sub="MYR" />
+        <StatCard label="Market Value" value={`RM ${portfolioValue.toFixed(2)}`} sub={`${holdings.length} position${holdings.length !== 1 ? 's' : ''}`} />
+        <StatCard label="Position P/L" value={`${positionPL >= 0 ? '+' : ''}${positionPL.toFixed(2)}`} sub={portfolioValue > 0 ? `${((positionPL / (portfolioValue - positionPL)) * 100).toFixed(2)}%` : '—'} color={positionPL >= 0 ? COLORS.green : COLORS.red} />
+        <StatCard label="Cash" value={`RM ${cash.toFixed(2)}`} sub="Available" />
+      </div>
+
+      <Panel>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-2">
+            <Zap size={14} style={{ color: COLORS.amber }} />
+            <h2 className="serif text-lg font-semibold">AI Daily Insight</h2>
+          </div>
+          <button onClick={generateInsight} disabled={loadingInsight} className="flex items-center gap-1 text-xs px-3 py-1.5 rounded" style={{ color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}>
+            {loadingInsight ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            Generate
+          </button>
+        </div>
+        {error && <p className="text-xs mb-2" style={{ color: COLORS.red }}>{error}</p>}
+        {insight ? (
+          <p className="text-sm leading-relaxed">{insight}</p>
+        ) : (
+          <p className="text-sm" style={{ color: COLORS.textDim }}>Click "Generate" for today's AI-powered market insight.</p>
+        )}
+      </Panel>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <Panel>
+          <h3 className="serif text-base font-semibold mb-3">Allocation</h3>
+          {pieData.length === 0 ? (
+            <p className="text-sm" style={{ color: COLORS.textDim }}>No holdings yet.</p>
+          ) : (
+            <>
+              <ResponsiveContainer width="100%" height={200}>
+                <PieChart>
+                  <Pie data={pieData} dataKey="value" innerRadius={50} outerRadius={80} paddingAngle={2}>
+                    {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip contentStyle={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, fontSize: 12 }} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="mt-2 space-y-1">
+                {pieData.map((d, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full" style={{ background: PIE_COLORS[i % PIE_COLORS.length] }}></div>
+                      <span>{d.name}</span>
+                    </div>
+                    <span className="mono" style={{ color: COLORS.textDim }}>{((d.value / totalAssets) * 100).toFixed(1)}%</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </Panel>
+
+        <Panel>
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="serif text-base font-semibold">Holdings</h3>
+            <button onClick={() => setTab('portfolio')} className="text-[11px]" style={{ color: COLORS.green }}>Manage →</button>
+          </div>
+          {holdings.length === 0 ? (
+            <p className="text-sm" style={{ color: COLORS.textDim }}>No positions.</p>
+          ) : (
+            <div className="space-y-2">
+              {holdings.map((h, i) => {
+                const pl = (h.currentPrice - h.avgCost) * h.qty;
+                const plPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
+                return (
+                  <div key={i} className="flex items-center justify-between py-2 border-b last:border-0" style={{ borderColor: COLORS.border }}>
+                    <div>
+                      <div className="font-semibold text-sm">{h.symbol}</div>
+                      <div className="text-[11px] mono" style={{ color: COLORS.textDim }}>{h.qty} @ {h.avgCost}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="mono text-sm">{(h.qty * h.currentPrice).toFixed(2)}</div>
+                      <div className="text-[11px] mono" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>
+                        {pl >= 0 ? '+' : ''}{pl.toFixed(2)} ({plPct.toFixed(2)}%)
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+// ===== ANALYZER =====
+function Analyzer({ capital }) {
+  const [query, setQuery] = useState('');
+  const [suggestions, setSuggestions] = useState([]);
+  const [analysis, setAnalysis] = useState(null);
+  const [fallbackText, setFallbackText] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [error, setError] = useState('');
+  const [searched, setSearched] = useState(false);
+
+  const search = async () => {
+    if (!query.trim()) return;
+    setSearching(true); setError(''); setAnalysis(null); setFallbackText(''); setSuggestions([]); setSearched(false);
+    const q = query.trim().toUpperCase();
+    try {
+      const prompt = `User is searching for a stock or ETF. Query: "${q}"
+
+Return ONLY a valid JSON object.
+
+If exact recognized ticker: {"matchType":"exact","ticker":"X","name":"Full Name","market":"US or Bursa Malaysia"}
+If partial/misspelled: {"matchType":"suggestions","results":[{"ticker":"X","name":"Y","market":"Z"}]} (up to 5)
+If unknown: {"matchType":"none","message":"No matches"}
+
+Match Malaysian (Bursa) and US tickers. Be helpful with keywords like "tech etf", "bank malaysia".`;
+
+      const result = await callClaude(prompt, 800);
+      const parsed = parseJSON(result);
+      if (!parsed) { setError('Search failed. Try again.'); setSearching(false); return; }
+      setSearched(true);
+      if (parsed.matchType === 'exact') {
+        await analyzeticker(parsed.ticker, parsed.name, parsed.market);
+      } else if (parsed.matchType === 'suggestions' && parsed.results?.length > 0) {
+        setSuggestions(parsed.results);
+      } else {
+        setError(parsed.message || 'No matches found.');
+      }
+    } catch (e) { setError(e.message); }
+    setSearching(false);
+  };
+
+  const analyzeticker = async (tk, name, market) => {
+    setAnalyzing(true); setError(''); setAnalysis(null); setFallbackText(''); setSuggestions([]);
+    try {
+      const prompt = `Analyze "${tk}" (${name || ''}, ${market || ''}) as a professional trading analyst.
+
+Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
+
+{
+  "ticker": "${tk}",
+  "name": "full name",
+  "market": "market",
+  "sector": "sector",
+  "verdict": "BUY|SELL|HOLD",
+  "confidence": 7,
+  "summary": "two sentences",
+  "technical": {"trend":"...","momentum":"...","support":"...","resistance":"..."},
+  "fundamental": "two sentences",
+  "risks": ["r1","r2","r3"],
+  "tradePlan": {"entryZone":"...","stopLoss":"...","target":"...","positionSize":"RM amount for ${capital} at 2% risk","rationale":"one sentence"}
+}`;
+      const result = await callClaude(prompt, 2000);
+      const parsed = parseJSON(result);
+      if (parsed) setAnalysis(parsed);
+      else {
+        const textPrompt = `Give structured analysis of ${tk} with sections: Verdict, Overview, Technical, Fundamental, Risks, Trade Plan (entry/stop/target/RM${capital}@2% size/rationale).`;
+        setFallbackText(await callClaude(textPrompt, 1500));
+      }
+    } catch (e) { setError(e.message); }
+    setAnalyzing(false);
+  };
+
+  const reset = () => { setQuery(''); setSuggestions([]); setAnalysis(null); setFallbackText(''); setError(''); setSearched(false); };
+  const verdictColor = analysis?.verdict === 'BUY' ? COLORS.green : analysis?.verdict === 'SELL' ? COLORS.red : COLORS.amber;
+  const loading = searching || analyzing;
+
+  return (
+    <div className="space-y-4">
+      <Panel>
+        <h2 className="serif text-lg font-semibold mb-3">Stock / ETF Search</h2>
+        <div className="flex gap-2">
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && search()}
+            placeholder="Search: VOO, apple, tech etf, sun, bank..."
+            className="flex-1 px-3 py-2 rounded mono text-sm outline-none"
+            style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+            disabled={loading}
+          />
+          <button onClick={search} disabled={loading || !query.trim()} className="px-4 py-2 rounded text-sm font-semibold flex items-center gap-2 disabled:opacity-50" style={{ background: COLORS.green, color: '#000' }}>
+            {searching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+            {searching ? 'Searching' : 'Search'}
+          </button>
+          {(analysis || fallbackText || suggestions.length > 0) && (
+            <button onClick={reset} className="px-3 py-2 rounded text-sm" style={{ background: COLORS.panelLight, color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}><X size={14} /></button>
+          )}
+        </div>
+        <p className="mt-2 text-[11px]" style={{ color: COLORS.textDim }}>💡 Examples: <span className="mono">VOO</span> · <span className="mono">apple</span> · <span className="mono">tech etf</span> · <span className="mono">malaysia bank</span></p>
+        {error && <p className="mt-2 text-xs" style={{ color: COLORS.red }}>{error}</p>}
+      </Panel>
+
+      {suggestions.length > 0 && !analyzing && !analysis && (
+        <Panel>
+          <p className="text-xs mb-3" style={{ color: COLORS.textDim }}>No exact match. Did you mean:</p>
+          <div className="space-y-2">
+            {suggestions.map((s, i) => (
+              <button key={i} onClick={() => analyzeticker(s.ticker, s.name, s.market)} className="w-full flex items-center justify-between p-3 rounded text-left" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+                <div>
+                  <div className="font-bold mono text-sm" style={{ color: COLORS.green }}>{s.ticker}</div>
+                  <div className="text-xs mt-0.5">{s.name}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] mono uppercase" style={{ color: COLORS.textDim }}>{s.market}</div>
+                  <div className="text-[11px] mt-1" style={{ color: COLORS.green }}>Analyze →</div>
+                </div>
+              </button>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {analyzing && <Panel><div className="flex items-center justify-center gap-3 py-8"><Loader2 className="animate-spin" style={{ color: COLORS.green }} /><span className="text-sm" style={{ color: COLORS.textDim }}>Running analysis...</span></div></Panel>}
+
+      {analysis && (
+        <>
+          <Panel>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div>
+                <div className="mono text-xs" style={{ color: COLORS.textDim }}>{analysis.market} · {analysis.sector}</div>
+                <div className="serif text-2xl font-bold mt-1">{analysis.ticker} <span className="text-base font-normal" style={{ color: COLORS.textDim }}>{analysis.name}</span></div>
+              </div>
+              <div className="text-right">
+                <div className="serif text-4xl font-bold" style={{ color: verdictColor }}>{analysis.verdict}</div>
+                <div className="mono text-xs" style={{ color: COLORS.textDim }}>Confidence: {analysis.confidence}/10</div>
+              </div>
+            </div>
+            <p className="mt-3 text-sm leading-relaxed">{analysis.summary}</p>
+          </Panel>
+          <div className="grid md:grid-cols-2 gap-3">
+            <Panel>
+              <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2"><TrendingUp size={14} /> Technical</h3>
+              <div className="space-y-2 text-sm">
+                <Row label="Trend" value={analysis.technical.trend} />
+                <Row label="Momentum" value={analysis.technical.momentum} />
+                <Row label="Support" value={analysis.technical.support} mono />
+                <Row label="Resistance" value={analysis.technical.resistance} mono />
+              </div>
+            </Panel>
+            <Panel>
+              <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2"><Shield size={14} /> Fundamental</h3>
+              <p className="text-sm leading-relaxed">{analysis.fundamental}</p>
+            </Panel>
+          </div>
+          <Panel>
+            <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2" style={{ color: COLORS.amber }}><AlertTriangle size={14} /> Risks</h3>
+            <ul className="space-y-2">
+              {analysis.risks.map((r, i) => (<li key={i} className="flex gap-2 text-sm"><span style={{ color: COLORS.amber }}>—</span><span>{r}</span></li>))}
+            </ul>
+          </Panel>
+          <Panel accent={COLORS.green}>
+            <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2"><Target size={14} style={{ color: COLORS.green }} /> AI Trade Plan</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+              <PlanItem label="Entry Zone" value={analysis.tradePlan.entryZone} />
+              <PlanItem label="Stop Loss" value={analysis.tradePlan.stopLoss} color={COLORS.red} />
+              <PlanItem label="Target" value={analysis.tradePlan.target} color={COLORS.green} />
+              <PlanItem label="Position Size" value={analysis.tradePlan.positionSize} />
+            </div>
+            <p className="text-xs leading-relaxed" style={{ color: COLORS.textDim }}>{analysis.tradePlan.rationale}</p>
+          </Panel>
+        </>
+      )}
+
+      {fallbackText && !analysis && (
+        <Panel accent={COLORS.amber}>
+          <div className="flex items-center gap-2 mb-3"><AlertTriangle size={14} style={{ color: COLORS.amber }} /><h3 className="serif text-base font-semibold">Analysis (Text Mode)</h3></div>
+          <div className="text-sm leading-relaxed whitespace-pre-wrap">{fallbackText}</div>
+        </Panel>
+      )}
+
+      {!searched && !loading && (
+        <Panel>
+          <div className="text-center py-8" style={{ color: COLORS.textDim }}>
+            <Search size={32} className="mx-auto mb-3 opacity-30" />
+            <p className="text-sm">Search any stock, ETF, or keyword</p>
+            <div className="flex flex-wrap gap-2 justify-center mt-3">
+              {['VOO', 'SPY', 'AAPL', 'SUNREIT', 'tech etf', 'malaysia bank'].map(ex => (
+                <button key={ex} onClick={() => { setQuery(ex); setTimeout(() => search(), 50); }} className="text-[11px] px-2 py-1 rounded mono" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}>{ex}</button>
+              ))}
+            </div>
+            <p className="text-xs mt-4" style={{ color: COLORS.green }}>💬 For free-form questions, use the AI Chat tab</p>
+          </div>
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+// ===== PORTFOLIO =====
+function Portfolio({ holdings, setHoldings, cash, setCash }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
+
+  const add = () => {
+    if (!form.symbol || !form.qty || !form.avgCost) return;
+    setHoldings([...holdings, { symbol: form.symbol.toUpperCase(), qty: parseFloat(form.qty), avgCost: parseFloat(form.avgCost), currentPrice: parseFloat(form.currentPrice) || parseFloat(form.avgCost), market: form.market }]);
+    setForm({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
+    setShowAdd(false);
+  };
+
+  const remove = (i) => setHoldings(holdings.filter((_, idx) => idx !== i));
+  const updatePrice = (i, newPrice) => {
+    const updated = [...holdings];
+    updated[i].currentPrice = parseFloat(newPrice) || updated[i].currentPrice;
+    setHoldings(updated);
+  };
+
+  return (
+    <div className="space-y-4">
+      <Panel>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="serif text-lg font-semibold">Portfolio Manager</h2>
+          <button onClick={() => setShowAdd(!showAdd)} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded" style={{ background: COLORS.green, color: '#000' }}><Plus size={14} /> Add</button>
+        </div>
+        <div className="mb-4">
+          <label className="text-xs mono" style={{ color: COLORS.textDim }}>CASH (RM)</label>
+          <input type="number" value={cash} onChange={e => setCash(parseFloat(e.target.value) || 0)} className="block w-32 mt-1 px-2 py-1 rounded mono text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+        </div>
+        {showAdd && (
+          <div className="mb-4 p-3 rounded grid grid-cols-2 md:grid-cols-5 gap-2" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+            <input placeholder="Symbol" value={form.symbol} onChange={e => setForm({ ...form, symbol: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+            <input placeholder="Qty" type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+            <input placeholder="Avg Cost" type="number" step="0.01" value={form.avgCost} onChange={e => setForm({ ...form, avgCost: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+            <input placeholder="Current Price" type="number" step="0.01" value={form.currentPrice} onChange={e => setForm({ ...form, currentPrice: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+            <button onClick={add} className="px-3 py-1.5 rounded text-sm font-semibold" style={{ background: COLORS.green, color: '#000' }}>Save</button>
+          </div>
+        )}
+        {holdings.length === 0 ? (
+          <p className="text-sm py-8 text-center" style={{ color: COLORS.textDim }}>No holdings.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-[11px] mono uppercase" style={{ color: COLORS.textDim, borderBottom: `1px solid ${COLORS.border}` }}>
+                  <th className="py-2">Symbol</th><th>Qty</th><th>Cost</th><th>Current</th><th>MV</th><th>P/L</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {holdings.map((h, i) => {
+                  const mv = h.qty * h.currentPrice;
+                  const pl = (h.currentPrice - h.avgCost) * h.qty;
+                  const plPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
+                  return (
+                    <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                      <td className="py-3 font-semibold">{h.symbol}</td>
+                      <td className="mono">{h.qty}</td>
+                      <td className="mono">{h.avgCost.toFixed(2)}</td>
+                      <td><input type="number" step="0.01" value={h.currentPrice} onChange={e => updatePrice(i, e.target.value)} className="w-20 px-1 py-0.5 rounded mono text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} /></td>
+                      <td className="mono">{mv.toFixed(2)}</td>
+                      <td className="mono" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>{pl >= 0 ? '+' : ''}{pl.toFixed(2)} <span className="text-[10px]">({plPct.toFixed(1)}%)</span></td>
+                      <td><button onClick={() => remove(i)} className="opacity-50"><Trash2 size={14} /></button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+// ===== SIZING =====
+function Sizing({ capital, setCapital, riskPct, setRiskPct }) {
+  const [entry, setEntry] = useState(''); const [stop, setStop] = useState(''); const [target, setTarget] = useState('');
+  const e = parseFloat(entry) || 0, s = parseFloat(stop) || 0, t = parseFloat(target) || 0;
+  const riskRM = capital * (riskPct / 100);
+  const riskPerShare = e - s;
+  const maxShares = riskPerShare > 0 ? Math.floor(riskRM / riskPerShare) : 0;
+  const positionCost = maxShares * e;
+  const potentialProfit = t > 0 ? maxShares * (t - e) : 0;
+  const rrr = riskPerShare > 0 && t > 0 ? ((t - e) / riskPerShare).toFixed(2) : '—';
+
+  return (
+    <Panel>
+      <h2 className="serif text-lg font-semibold mb-4">Position Sizing Calculator</h2>
+      <p className="text-xs mb-4" style={{ color: COLORS.textDim }}>Rule #1: never risk more than 2% of capital on a single trade.</p>
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="space-y-3">
+          <Field label="Capital (RM)" value={capital} onChange={v => setCapital(parseFloat(v) || 0)} />
+          <Field label="Risk per Trade (%)" value={riskPct} onChange={v => setRiskPct(parseFloat(v) || 0)} step="0.5" />
+          <Field label="Entry Price" value={entry} onChange={setEntry} placeholder="2.30" />
+          <Field label="Stop Loss" value={stop} onChange={setStop} placeholder="2.20" />
+          <Field label="Target Price (optional)" value={target} onChange={setTarget} placeholder="2.60" />
+        </div>
+        <div className="space-y-3">
+          <Result label="Max Risk (RM)" value={riskRM.toFixed(2)} color={COLORS.amber} />
+          <Result label="Risk per Share" value={riskPerShare > 0 ? `RM ${riskPerShare.toFixed(2)}` : '—'} />
+          <Result label="Max Shares" value={maxShares} highlight />
+          <Result label="Position Cost" value={`RM ${positionCost.toFixed(2)}`} />
+          <Result label="Potential Profit" value={potentialProfit > 0 ? `RM ${potentialProfit.toFixed(2)}` : '—'} color={COLORS.green} />
+          <Result label="R:R Ratio" value={`1 : ${rrr}`} color={parseFloat(rrr) >= 2 ? COLORS.green : COLORS.amber} />
+        </div>
+      </div>
+      {parseFloat(rrr) > 0 && parseFloat(rrr) < 2 && (
+        <div className="mt-4 p-3 rounded text-xs" style={{ background: 'rgba(245, 158, 11, 0.1)', border: `1px solid ${COLORS.amber}`, color: COLORS.amber }}>
+          ⚠ R:R below 1:2 — consider skipping. Pro traders require 1:2 minimum.
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ===== CHAT =====
+function Chat({ holdings, capital, cash }) {
+  const [messages, setMessages] = useState([{ role: 'assistant', content: `Hey Wen Xiang. I'm your AI trading analyst. I know your portfolio and capital. Ask me anything — about a stock, a strategy, or just bounce ideas.` }]);
+  const [input, setInput] = useState(''); const [loading, setLoading] = useState(false);
+  const scrollRef = useRef(null);
+  useEffect(() => { scrollRef.current?.scrollTo(0, scrollRef.current.scrollHeight); }, [messages]);
+
+  const send = async () => {
+    if (!input.trim() || loading) return;
+    const userMsg = { role: 'user', content: input };
+    const updated = [...messages, userMsg];
+    setMessages(updated); setInput(''); setLoading(true);
+    try {
+      const portfolioStr = holdings.map(h => `${h.symbol}: ${h.qty} @ ${h.avgCost}, now ${h.currentPrice}`).join('; ') || 'None';
+      const context = `You are an experienced trading analyst advising Malaysian retail trader Wen Xiang.
+CONTEXT: Capital RM${capital}, Cash RM${cash}, Holdings: ${portfolioStr}. Markets: US ETFs (VOO/SPY), Bursa Malaysia. Early-stage trader. 2% risk per trade.
+
+CONVERSATION:
+${updated.map(m => `${m.role === 'user' ? 'WEN XIANG' : 'YOU'}: ${m.content}`).join('\n')}
+
+Respond as analyst. Direct, specific, practical. No fluff. Under 200 words unless detail is essential.`;
+      const result = await callClaude(context, 800);
+      setMessages([...updated, { role: 'assistant', content: result }]);
+    } catch (e) { setMessages([...updated, { role: 'assistant', content: `Error: ${e.message}` }]); }
+    setLoading(false);
+  };
+
+  return (
+    <Panel>
+      <h2 className="serif text-lg font-semibold mb-3 flex items-center gap-2"><MessageSquare size={16} /> AI Trader Chat</h2>
+      <div ref={scrollRef} className="h-[420px] overflow-y-auto scrollbar pr-2 space-y-3 mb-3">
+        {messages.map((m, i) => (
+          <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className="max-w-[85%] p-3 rounded-lg text-sm leading-relaxed whitespace-pre-wrap" style={{ background: m.role === 'user' ? COLORS.green : COLORS.panelLight, color: m.role === 'user' ? '#000' : COLORS.text, border: m.role === 'user' ? 'none' : `1px solid ${COLORS.border}` }}>{m.content}</div>
+          </div>
+        ))}
+        {loading && <div className="flex justify-start"><div className="p-3 rounded-lg" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}><Loader2 size={14} className="animate-spin" /></div></div>}
+      </div>
+      <div className="flex gap-2">
+        <input value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send()} placeholder="Ask about a stock, strategy, or trade idea..." className="flex-1 px-3 py-2 rounded text-sm outline-none" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+        <button onClick={send} disabled={loading || !input.trim()} className="px-4 rounded disabled:opacity-50" style={{ background: COLORS.green, color: '#000' }}><Send size={14} /></button>
+      </div>
+    </Panel>
+  );
+}
+
+// ===== JOURNAL =====
+function Journal({ trades, setTrades }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [form, setForm] = useState({ date: new Date().toISOString().split('T')[0], symbol: '', entry: '', exit: '', qty: '', notes: '' });
+  const [pattern, setPattern] = useState(''); const [loadingPattern, setLoadingPattern] = useState(false);
+
+  const add = () => {
+    if (!form.symbol || !form.entry || !form.exit || !form.qty) return;
+    const pnl = (parseFloat(form.exit) - parseFloat(form.entry)) * parseFloat(form.qty);
+    setTrades([{ ...form, pnl, id: Date.now() }, ...trades]);
+    setForm({ date: new Date().toISOString().split('T')[0], symbol: '', entry: '', exit: '', qty: '', notes: '' });
+    setShowAdd(false);
+  };
+  const remove = (id) => setTrades(trades.filter(t => t.id !== id));
+
+  const analyzePatterns = async () => {
+    if (trades.length < 3) { setPattern('Need at least 3 trades to analyze patterns.'); return; }
+    setLoadingPattern(true);
+    try {
+      const tradesStr = trades.map(t => `${t.date}: ${t.symbol}, ${t.entry}→${t.exit}, qty ${t.qty}, P/L ${t.pnl.toFixed(2)}, notes: ${t.notes || '—'}`).join('\n');
+      const prompt = `Review these trades and identify 3 behavioral patterns plus 2 actionable improvements. Be specific.\n\nTRADES:\n${tradesStr}\n\nShort paragraphs, max 200 words.`;
+      setPattern(await callClaude(prompt, 600));
+    } catch (e) { setPattern('Failed to analyze: ' + e.message); }
+    setLoadingPattern(false);
+  };
+
+  const totalPL = trades.reduce((s, t) => s + t.pnl, 0);
+  const wins = trades.filter(t => t.pnl > 0).length;
+  const winRate = trades.length > 0 ? ((wins / trades.length) * 100).toFixed(1) : 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard label="Total Trades" value={trades.length} sub="Logged" />
+        <StatCard label="Win Rate" value={`${winRate}%`} sub={`${wins} wins`} color={parseFloat(winRate) >= 50 ? COLORS.green : COLORS.amber} />
+        <StatCard label="Total P/L" value={`${totalPL >= 0 ? '+' : ''}${totalPL.toFixed(2)}`} sub="RM" color={totalPL >= 0 ? COLORS.green : COLORS.red} />
+      </div>
+      <Panel>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="serif text-lg font-semibold">Trading Journal</h2>
+          <button onClick={() => setShowAdd(!showAdd)} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded" style={{ background: COLORS.green, color: '#000' }}><Plus size={14} /> Log</button>
+        </div>
+        {showAdd && (
+          <div className="mb-4 p-3 rounded space-y-2" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+              <input type="date" value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} className="px-2 py-1.5 rounded text-sm" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <input placeholder="Symbol" value={form.symbol} onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase() })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <input placeholder="Entry" type="number" step="0.01" value={form.entry} onChange={e => setForm({ ...form, entry: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <input placeholder="Exit" type="number" step="0.01" value={form.exit} onChange={e => setForm({ ...form, exit: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <input placeholder="Qty" type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+            </div>
+            <textarea placeholder="Notes / lesson..." value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full px-2 py-1.5 rounded text-sm" rows={2} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+            <button onClick={add} className="px-3 py-1.5 rounded text-sm font-semibold" style={{ background: COLORS.green, color: '#000' }}>Save Trade</button>
+          </div>
+        )}
+        {trades.length === 0 ? (
+          <p className="text-sm py-8 text-center" style={{ color: COLORS.textDim }}>No trades logged.</p>
+        ) : (
+          <div className="space-y-2">
+            {trades.map(t => (
+              <div key={t.id} className="p-3 rounded flex items-start justify-between gap-2" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="font-bold">{t.symbol}</span>
+                    <span className="text-xs mono" style={{ color: COLORS.textDim }}>{t.date}</span>
+                    <span className="text-xs mono">{t.qty} @ {t.entry} → {t.exit}</span>
+                    <span className="text-sm mono font-semibold" style={{ color: t.pnl >= 0 ? COLORS.green : COLORS.red }}>{t.pnl >= 0 ? '+' : ''}{t.pnl.toFixed(2)}</span>
+                  </div>
+                  {t.notes && <p className="text-xs mt-1" style={{ color: COLORS.textDim }}>{t.notes}</p>}
+                </div>
+                <button onClick={() => remove(t.id)} className="opacity-50"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+      <Panel>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="serif text-base font-semibold flex items-center gap-2"><Zap size={14} style={{ color: COLORS.amber }} /> AI Pattern Analysis</h3>
+          <button onClick={analyzePatterns} disabled={loadingPattern} className="flex items-center gap-1 text-xs px-3 py-1.5 rounded" style={{ color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}>{loadingPattern ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Analyze</button>
+        </div>
+        {pattern ? <p className="text-sm leading-relaxed whitespace-pre-wrap">{pattern}</p> : <p className="text-sm" style={{ color: COLORS.textDim }}>Log at least 3 trades, then analyze.</p>}
+      </Panel>
+    </div>
+  );
+}
+
+// ===== SHARED =====
+function Panel({ children, accent }) {
+  return <div className="rounded-lg p-4" style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderLeft: accent ? `3px solid ${accent}` : `1px solid ${COLORS.border}` }}>{children}</div>;
+}
+function StatCard({ label, value, sub, color }) {
+  return <div className="rounded-lg p-3" style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}` }}><div className="text-[10px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>{label}</div><div className="mono text-xl font-bold mt-1" style={{ color: color || COLORS.text }}>{value}</div><div className="text-[10px] mono mt-0.5" style={{ color: COLORS.textDim }}>{sub}</div></div>;
+}
+function Row({ label, value, mono }) {
+  return <div className="flex justify-between py-1.5" style={{ borderBottom: `1px solid ${COLORS.border}` }}><span className="text-xs uppercase tracking-wider" style={{ color: COLORS.textDim }}>{label}</span><span className={mono ? 'mono text-sm' : 'text-sm'}>{value}</span></div>;
+}
+function PlanItem({ label, value, color }) {
+  return <div className="rounded p-2" style={{ background: COLORS.panelLight }}><div className="text-[10px] mono uppercase" style={{ color: COLORS.textDim }}>{label}</div><div className="mono text-sm font-bold mt-0.5" style={{ color: color || COLORS.text }}>{value}</div></div>;
+}
+function Field({ label, value, onChange, placeholder, step = '0.01' }) {
+  return <div><label className="text-[11px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>{label}</label><input type="number" step={step} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} className="block w-full mt-1 px-3 py-2 rounded mono text-sm outline-none" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} /></div>;
+}
+function Result({ label, value, color, highlight }) {
+  return <div className="p-3 rounded" style={{ background: highlight ? 'rgba(16,185,129,0.08)' : COLORS.panelLight, border: `1px solid ${highlight ? COLORS.green : COLORS.border}` }}><div className="text-[10px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>{label}</div><div className="mono text-lg font-bold mt-1" style={{ color: color || (highlight ? COLORS.green : COLORS.text) }}>{value}</div></div>;
+}

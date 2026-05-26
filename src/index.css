@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Fraunces:wght@400;600;700&display=swap');
+
+body {
+  background: #0a0a0a;
+  color: #e5e5e5;
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+.mono { font-family: 'JetBrains Mono', monospace; }
+.serif { font-family: 'Fraunces', serif; }
+
+.glow-green { text-shadow: 0 0 12px rgba(16, 185, 129, 0.4); }
+.glow-red { text-shadow: 0 0 12px rgba(239, 68, 68, 0.4); }
+
+.scrollbar::-webkit-scrollbar { width: 6px; }
+.scrollbar::-webkit-scrollbar-track { background: #0a0a0a; }
+.scrollbar::-webkit-scrollbar-thumb { background: #262626; border-radius: 3px; }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+.pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
