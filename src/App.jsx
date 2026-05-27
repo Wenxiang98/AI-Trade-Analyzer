@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut } from 'lucide-react';
-import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash } from './lib/supabase';
+import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
+import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
 
 const COLORS = {
@@ -180,48 +180,64 @@ function TradeDesk({ session, profile, onSignOut }) {
   const userName = profile?.name || session.user.email?.split('@')[0] || 'Trader';
   const userId   = session.user.id;
 
-  const [tab,          setTab]          = useState('dashboard');
-  const [holdings,     setHoldings]     = useState([]);
-  const [cash,         setCash]         = useState(0);
-  const [capital,      setCapital]      = useState(() => storage.get('settings:capital', 1000));
-  const [riskPct,      setRiskPct]      = useState(() => storage.get('settings:riskPct', 2));
-  const [trades,       setTrades]       = useState(() => storage.get('journal:trades', []));
-  const [showSettings, setShowSettings] = useState(false);
-  const [refreshing,   setRefreshing]   = useState(false);
+  const [tab,              setTab]              = useState('dashboard');
+  const [holdings,         setHoldings]         = useState([]);
+  const [cash,             setCash]             = useState(0);
+  const [capital,          setCapital]          = useState(() => storage.get('settings:capital', 1000));
+  const [riskPct,          setRiskPct]          = useState(() => storage.get('settings:riskPct', 2));
+  const [trades,           setTrades]           = useState([]);
+  const [alerts,           setAlerts]           = useState([]);
+  const [snapshots,        setSnapshots]        = useState([]);
+  const [triggeredAlerts,  setTriggeredAlerts]  = useState([]);
+  const [showSettings,     setShowSettings]     = useState(false);
+  const [refreshing,       setRefreshing]       = useState(false);
   const [portfolioLoading, setPortfolioLoading] = useState(true);
-  const cashSaveRef = useRef(null);
+  const [lastRefreshed,    setLastRefreshed]    = useState(null);
+  const [autoRefreshMins,  setAutoRefreshMins]  = useState(() => storage.get('settings:autoRefresh', 5));
+  const cashSaveRef    = useRef(null);
+  const refreshFnRef   = useRef(null);
 
-  // ── Settings still in localStorage (device-specific) ──────────────────────
+  // ── Settings in localStorage (device-specific) ────────────────────────────
   useEffect(() => { storage.set('settings:capital', capital); }, [capital]);
   useEffect(() => { storage.set('settings:riskPct', riskPct); }, [riskPct]);
-  useEffect(() => { storage.set('journal:trades', trades); }, [trades]);
+  useEffect(() => { storage.set('settings:autoRefresh', autoRefreshMins); }, [autoRefreshMins]);
 
-  // ── Load portfolio from Supabase on login ──────────────────────────────────
+  // ── Load all data from Supabase on login ───────────────────────────────────
   useEffect(() => {
     (async () => {
       setPortfolioLoading(true);
       try {
-        const [rows, prof] = await Promise.all([
+        const [rows, prof, journalRows, alertRows, snapshotRows] = await Promise.all([
           getPortfolio(userId),
           getProfile(userId),
+          getJournalTrades(userId),
+          getAlerts(userId),
+          getSnapshots(userId, 30),
         ]);
         setHoldings(rows);
         setCash(Number(prof?.cash ?? 0));
-      } catch (e) {
-        console.error('Failed to load portfolio:', e);
-      }
+        setTrades(journalRows);
+        setAlerts(alertRows);
+        setSnapshots(snapshotRows);
+      } catch (e) { console.error('Failed to load data:', e); }
       setPortfolioLoading(false);
     })();
   }, [userId]);
 
-  // ── Cash change — debounced save to Supabase ───────────────────────────────
+  // ── Auto-refresh interval ──────────────────────────────────────────────────
+  useEffect(() => { refreshFnRef.current = refreshPrices; });
+  useEffect(() => {
+    if (!autoRefreshMins) return;
+    const id = setInterval(() => refreshFnRef.current?.(), autoRefreshMins * 60 * 1000);
+    return () => clearInterval(id);
+  }, [autoRefreshMins]);
+
+  // ── Cash change — debounced save ───────────────────────────────────────────
   const handleCashChange = (val) => {
     const num = parseFloat(val) || 0;
     setCash(num);
     clearTimeout(cashSaveRef.current);
-    cashSaveRef.current = setTimeout(() => {
-      saveCash(userId, num).catch(console.error);
-    }, 800);
+    cashSaveRef.current = setTimeout(() => saveCash(userId, num).catch(console.error), 800);
   };
 
   // ── Holdings mutations ─────────────────────────────────────────────────────
@@ -240,8 +256,7 @@ function TradeDesk({ session, profile, onSignOut }) {
   };
 
   const handleUpdatePrice = (holdingId, price) => {
-    const p = parseFloat(price) || 0;
-    setHoldings(prev => prev.map(h => h.id === holdingId ? { ...h, currentPrice: p } : h));
+    setHoldings(prev => prev.map(h => h.id === holdingId ? { ...h, currentPrice: parseFloat(price) || h.currentPrice } : h));
   };
 
   const handleUpdatePriceBlur = (holdingId, price) => {
@@ -250,15 +265,44 @@ function TradeDesk({ session, profile, onSignOut }) {
   };
 
   const handleReplacePortfolio = async (newHoldings) => {
-    try {
-      const saved = await replacePortfolio(userId, newHoldings);
-      setHoldings(saved);
-    } catch (e) { console.error('Replace portfolio failed:', e); throw e; }
+    const saved = await replacePortfolio(userId, newHoldings);
+    setHoldings(saved);
   };
 
-  // ── Live price refresh ─────────────────────────────────────────────────────
+  // ── Journal mutations ──────────────────────────────────────────────────────
+  const handleAddTrade = async (trade) => {
+    try {
+      const saved = await addJournalTrade(userId, trade);
+      setTrades(prev => [saved, ...prev]);
+    } catch (e) { console.error('Add trade failed:', e); }
+  };
+
+  const handleRemoveTrade = async (tradeId) => {
+    try {
+      await removeJournalTrade(tradeId);
+      setTrades(prev => prev.filter(t => t.id !== tradeId));
+    } catch (e) { console.error('Remove trade failed:', e); }
+  };
+
+  // ── Alert mutations ────────────────────────────────────────────────────────
+  const handleAddAlert = async (alertData) => {
+    try {
+      const saved = await addAlert(userId, alertData);
+      setAlerts(prev => [saved, ...prev]);
+    } catch (e) { console.error('Add alert failed:', e); }
+  };
+
+  const handleRemoveAlert = async (alertId) => {
+    try {
+      await removeAlert(alertId);
+      setAlerts(prev => prev.filter(a => a.id !== alertId));
+    } catch (e) { console.error('Remove alert failed:', e); }
+  };
+
+  // ── Live price refresh + alert check + snapshot ────────────────────────────
   const refreshPrices = async () => {
-    const symbols = holdings.map(h => h.symbol).filter(Boolean);
+    const currentHoldings = holdings;
+    const symbols = currentHoldings.map(h => h.symbol).filter(Boolean);
     if (!symbols.length) return;
     setRefreshing(true);
     try {
@@ -266,17 +310,35 @@ function TradeDesk({ session, profile, onSignOut }) {
       const updates = {};
       entries.forEach(([sym, data]) => { if (data?.price) updates[sym] = data.price; });
 
-      setHoldings(prev => prev.map(h => ({
-        ...h,
-        currentPrice: updates[h.symbol] ?? h.currentPrice,
-      })));
+      setHoldings(prev => prev.map(h => ({ ...h, currentPrice: updates[h.symbol] ?? h.currentPrice })));
+      await Promise.all(currentHoldings.filter(h => updates[h.symbol]).map(h => updateHoldingPrice(h.id, updates[h.symbol])));
 
-      // Persist updated prices to Supabase
-      await Promise.all(
-        holdings
-          .filter(h => updates[h.symbol])
-          .map(h => updateHoldingPrice(h.id, updates[h.symbol]))
-      );
+      // Check price alerts
+      const activeAlerts = alerts.filter(a => !a.triggered);
+      const fired = [];
+      for (const alert of activeAlerts) {
+        const price = updates[alert.symbol];
+        if (price == null) continue;
+        const hit = alert.direction === 'above' ? price >= alert.targetPrice : price <= alert.targetPrice;
+        if (hit) {
+          fired.push({ ...alert, currentPrice: price });
+          markAlertTriggered(alert.id).catch(console.error);
+          setAlerts(prev => prev.map(a => a.id === alert.id ? { ...a, triggered: true } : a));
+        }
+      }
+      if (fired.length) setTriggeredAlerts(prev => [...prev, ...fired]);
+
+      // Save portfolio snapshot
+      const portfolioVal = currentHoldings.reduce((sum, h) => sum + h.qty * (updates[h.symbol] ?? h.currentPrice), 0);
+      const costBasis    = currentHoldings.reduce((sum, h) => sum + h.qty * h.avgCost, 0);
+      await saveSnapshot(userId, { totalValue: portfolioVal + cash, portfolioValue: portfolioVal, cash, costBasis });
+      const snap = {
+        date:       new Date().toLocaleDateString('en-MY', { month: 'short', day: 'numeric' }),
+        totalValue: portfolioVal + cash,
+        pnl:        portfolioVal - costBasis,
+      };
+      setSnapshots(prev => [...prev.slice(-29), snap]);
+      setLastRefreshed(new Date());
     } catch (e) { console.error('Price refresh failed:', e); }
     setRefreshing(false);
   };
@@ -325,7 +387,7 @@ function TradeDesk({ session, profile, onSignOut }) {
         </div>
       </header>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} autoRefreshMins={autoRefreshMins} onAutoRefreshChange={setAutoRefreshMins} />}
 
       <nav className="border-b sticky top-[57px] z-40" style={{ borderColor: COLORS.border, background: COLORS.bg }}>
         <div className="max-w-7xl mx-auto px-4 flex overflow-x-auto scrollbar">
@@ -361,6 +423,18 @@ function TradeDesk({ session, profile, onSignOut }) {
       <main className="max-w-7xl mx-auto px-4 py-6">
         {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} />}
         {tab === 'analyzer' && <Analyzer capital={capital} />}
+        {/* Triggered alert banners */}
+        {triggeredAlerts.map((a, i) => (
+          <div key={i} className="mb-3 px-4 py-3 rounded-lg flex items-center justify-between" style={{ background: 'rgba(245,158,11,0.15)', border: `1px solid ${COLORS.amber}` }}>
+            <span className="text-sm" style={{ color: COLORS.amber }}>
+              🔔 <strong>{a.symbol}</strong> hit your target — now {a.currentPrice} ({a.direction === 'above' ? '▲' : '▼'} {a.targetPrice})
+            </span>
+            <button onClick={() => setTriggeredAlerts(prev => prev.filter((_, j) => j !== i))} style={{ color: COLORS.textDim }}><X size={14} /></button>
+          </div>
+        ))}
+
+        {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} snapshots={snapshots} lastRefreshed={lastRefreshed} />}
+        {tab === 'analyzer' && <Analyzer capital={capital} />}
         {tab === 'portfolio' && (
           <Portfolio
             holdings={holdings}
@@ -374,11 +448,15 @@ function TradeDesk({ session, profile, onSignOut }) {
             refreshPrices={refreshPrices}
             refreshing={refreshing}
             loading={portfolioLoading}
+            alerts={alerts}
+            onAddAlert={handleAddAlert}
+            onRemoveAlert={handleRemoveAlert}
+            lastRefreshed={lastRefreshed}
           />
         )}
         {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
         {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} userName={userName} />}
-        {tab === 'journal' && <Journal trades={trades} setTrades={setTrades} />}
+        {tab === 'journal' && <Journal trades={trades} onAddTrade={handleAddTrade} onRemoveTrade={handleRemoveTrade} />}
       </main>
 
       <footer className="max-w-7xl mx-auto px-4 py-6 text-[10px] text-center mono" style={{ color: COLORS.textDim }}>
@@ -399,16 +477,26 @@ function TradeDesk({ session, profile, onSignOut }) {
   );
 }
 
+const AUTO_REFRESH_OPTIONS = [
+  { value: 0,  label: 'Off' },
+  { value: 1,  label: '1 min' },
+  { value: 5,  label: '5 min' },
+  { value: 15, label: '15 min' },
+  { value: 30, label: '30 min' },
+];
+
 // ===== SETTINGS MODAL =====
-function SettingsModal({ onClose }) {
-  const [apiKey,       setApiKey]       = useState(localStorage.getItem('anthropic_api_key') || '');
+function SettingsModal({ onClose, autoRefreshMins, onAutoRefreshChange }) {
+  const [apiKey,        setApiKey]        = useState(localStorage.getItem('anthropic_api_key') || '');
   const [selectedModel, setSelectedModel] = useState(localStorage.getItem('claude_model') || DEFAULT_MODEL);
-  const [saved,        setSaved]        = useState(false);
+  const [localRefresh,  setLocalRefresh]  = useState(autoRefreshMins);
+  const [saved,         setSaved]         = useState(false);
 
   const save = async () => {
     const trimmed = apiKey.trim();
     localStorage.setItem('anthropic_api_key', trimmed);
     localStorage.setItem('claude_model', selectedModel);
+    onAutoRefreshChange(localRefresh);
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) await updateApiKey(user.id, trimmed);
@@ -475,6 +563,21 @@ function SettingsModal({ onClose }) {
             </p>
           </div>
 
+          {/* Auto-refresh */}
+          <div>
+            <label className="text-xs mono uppercase" style={{ color: COLORS.textDim }}>Auto Price Refresh</label>
+            <div className="flex gap-2 mt-2 flex-wrap">
+              {AUTO_REFRESH_OPTIONS.map(opt => (
+                <button key={opt.value} onClick={() => setLocalRefresh(opt.value)}
+                  className="px-3 py-1.5 rounded text-xs font-semibold"
+                  style={{ background: localRefresh === opt.value ? COLORS.green : COLORS.panelLight, color: localRefresh === opt.value ? '#000' : COLORS.textDim, border: `1px solid ${localRefresh === opt.value ? COLORS.green : COLORS.border}` }}>
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] mt-1" style={{ color: COLORS.textDim }}>Automatically fetch live prices in the background</p>
+          </div>
+
           <button onClick={save} className="w-full py-2 rounded font-semibold text-sm" style={{ background: COLORS.green, color: '#000' }}>
             {saved ? '✓ Saved!' : 'Save Settings'}
           </button>
@@ -485,7 +588,7 @@ function SettingsModal({ onClose }) {
 }
 
 // ===== DASHBOARD =====
-function Dashboard({ holdings, cash, totalAssets, positionPL, portfolioValue, setTab }) {
+function Dashboard({ holdings, cash, totalAssets, positionPL, portfolioValue, setTab, snapshots = [], lastRefreshed }) {
   const [insight, setInsight] = useState('');
   const [loadingInsight, setLoadingInsight] = useState(false);
   const [error, setError] = useState('');
@@ -534,6 +637,27 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
           <p className="text-sm leading-relaxed">{insight}</p>
         ) : (
           <p className="text-sm" style={{ color: COLORS.textDim }}>Click "Generate" for today's AI-powered market insight.</p>
+        )}
+      </Panel>
+
+      {/* Performance Chart */}
+      <Panel>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="serif text-base font-semibold">Portfolio Performance</h3>
+          {lastRefreshed && <span className="text-[11px] mono" style={{ color: COLORS.textDim }}>Updated {lastRefreshed.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' })}</span>}
+        </div>
+        {snapshots.length < 2 ? (
+          <p className="text-sm py-4 text-center" style={{ color: COLORS.textDim }}>Click "Live Prices" a few times to start tracking performance.</p>
+        ) : (
+          <ResponsiveContainer width="100%" height={180}>
+            <LineChart data={snapshots} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+              <XAxis dataKey="date" tick={{ fontSize: 10, fill: COLORS.textDim }} />
+              <YAxis tick={{ fontSize: 10, fill: COLORS.textDim }} width={60} tickFormatter={v => `RM${v.toFixed(0)}`} />
+              <Tooltip contentStyle={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, fontSize: 12 }} formatter={(v) => [`RM ${v.toFixed(2)}`, 'Total Value']} />
+              <Line type="monotone" dataKey="totalValue" stroke={COLORS.green} strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
         )}
       </Panel>
 
@@ -816,7 +940,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
 }
 
 // ===== PORTFOLIO =====
-function Portfolio({ holdings, onAddHolding, onRemoveHolding, onUpdatePrice, onUpdatePriceBlur, onReplacePortfolio, cash, onCashChange, refreshPrices, refreshing, loading }) {
+function Portfolio({ holdings, onAddHolding, onRemoveHolding, onUpdatePrice, onUpdatePriceBlur, onReplacePortfolio, cash, onCashChange, refreshPrices, refreshing, loading, alerts, onAddAlert, onRemoveAlert, lastRefreshed }) {
   const [showAdd, setShowAdd]         = useState(false);
   const [saving, setSaving]           = useState(false);
   const [form, setForm]               = useState({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
@@ -1111,7 +1235,84 @@ function Portfolio({ holdings, onAddHolding, onRemoveHolding, onUpdatePrice, onU
           </div>
         )}
       </Panel>
+      {/* Price Alerts Panel */}
+      <AlertsPanel alerts={alerts} onAddAlert={onAddAlert} onRemoveAlert={onRemoveAlert} lastRefreshed={lastRefreshed} />
     </div>
+  );
+}
+
+// ===== PRICE ALERTS =====
+function AlertsPanel({ alerts, onAddAlert, onRemoveAlert, lastRefreshed }) {
+  const [form,    setForm]    = useState({ symbol: '', targetPrice: '', direction: 'above' });
+  const [saving,  setSaving]  = useState(false);
+
+  const add = async () => {
+    if (!form.symbol || !form.targetPrice) return;
+    setSaving(true);
+    await onAddAlert({ symbol: form.symbol.toUpperCase(), targetPrice: parseFloat(form.targetPrice), direction: form.direction });
+    setForm({ symbol: '', targetPrice: '', direction: 'above' });
+    setSaving(false);
+  };
+
+  const active    = alerts.filter(a => !a.triggered);
+  const triggered = alerts.filter(a => a.triggered);
+
+  return (
+    <Panel>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="serif text-base font-semibold flex items-center gap-2">
+          🔔 Price Alerts
+          {active.length > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full mono" style={{ background: COLORS.amber + '22', color: COLORS.amber, border: `1px solid ${COLORS.amber}44` }}>{active.length} active</span>}
+        </h3>
+        {lastRefreshed && <span className="text-[11px] mono" style={{ color: COLORS.textDim }}>Checked {lastRefreshed.toLocaleTimeString('en-MY', { hour: '2-digit', minute: '2-digit' })}</span>}
+      </div>
+
+      {/* Add alert form */}
+      <div className="flex gap-2 mb-4 flex-wrap">
+        <input placeholder="Symbol" value={form.symbol} onChange={e => setForm({ ...form, symbol: e.target.value.toUpperCase() })}
+          className="px-2 py-1.5 rounded text-sm mono w-24" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+        <select value={form.direction} onChange={e => setForm({ ...form, direction: e.target.value })}
+          className="px-2 py-1.5 rounded text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}>
+          <option value="above">rises above</option>
+          <option value="below">drops below</option>
+        </select>
+        <input placeholder="Price" type="number" step="0.01" value={form.targetPrice} onChange={e => setForm({ ...form, targetPrice: e.target.value })}
+          className="px-2 py-1.5 rounded text-sm mono w-24" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+        <button onClick={add} disabled={saving || !form.symbol || !form.targetPrice}
+          className="px-3 py-1.5 rounded text-sm font-semibold flex items-center gap-1 disabled:opacity-40"
+          style={{ background: COLORS.amber, color: '#000' }}>
+          {saving ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Set Alert
+        </button>
+      </div>
+
+      {/* Active alerts */}
+      {active.length === 0 && triggered.length === 0 ? (
+        <p className="text-sm" style={{ color: COLORS.textDim }}>No alerts set. Add one above to get notified when a price hits your target.</p>
+      ) : (
+        <div className="space-y-2">
+          {active.map(a => (
+            <div key={a.id} className="flex items-center justify-between px-3 py-2 rounded text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+              <span>
+                <span className="mono font-bold" style={{ color: COLORS.green }}>{a.symbol}</span>
+                <span style={{ color: COLORS.textDim }}> {a.direction === 'above' ? '▲ rises above' : '▼ drops below'} </span>
+                <span className="mono font-semibold" style={{ color: COLORS.amber }}>{a.targetPrice}</span>
+              </span>
+              <button onClick={() => onRemoveAlert(a.id)} className="opacity-50 hover:opacity-100"><Trash2 size={13} /></button>
+            </div>
+          ))}
+          {triggered.map(a => (
+            <div key={a.id} className="flex items-center justify-between px-3 py-2 rounded text-sm opacity-50" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+              <span>
+                <span className="mono font-bold">{a.symbol}</span>
+                <span style={{ color: COLORS.textDim }}> {a.direction === 'above' ? '▲' : '▼'} {a.targetPrice} </span>
+                <span className="text-[11px] px-1.5 py-0.5 rounded mono" style={{ background: COLORS.green + '22', color: COLORS.green }}>✓ triggered</span>
+              </span>
+              <button onClick={() => onRemoveAlert(a.id)} className="opacity-50 hover:opacity-100"><Trash2 size={13} /></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -1203,19 +1404,22 @@ Respond as analyst. Direct, specific, practical. No fluff. Under 200 words unles
 }
 
 // ===== JOURNAL =====
-function Journal({ trades, setTrades }) {
+function Journal({ trades, onAddTrade, onRemoveTrade }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [saving,  setSaving]  = useState(false);
   const [form, setForm] = useState({ date: new Date().toISOString().split('T')[0], symbol: '', entry: '', exit: '', qty: '', notes: '' });
   const [pattern, setPattern] = useState(''); const [loadingPattern, setLoadingPattern] = useState(false);
 
-  const add = () => {
+  const add = async () => {
     if (!form.symbol || !form.entry || !form.exit || !form.qty) return;
+    setSaving(true);
     const pnl = (parseFloat(form.exit) - parseFloat(form.entry)) * parseFloat(form.qty);
-    setTrades([{ ...form, pnl, id: Date.now() }, ...trades]);
+    await onAddTrade({ ...form, exit: parseFloat(form.exit), entry: parseFloat(form.entry), qty: parseFloat(form.qty), pnl });
     setForm({ date: new Date().toISOString().split('T')[0], symbol: '', entry: '', exit: '', qty: '', notes: '' });
     setShowAdd(false);
+    setSaving(false);
   };
-  const remove = (id) => setTrades(trades.filter(t => t.id !== id));
+  const remove = (id) => onRemoveTrade(id);
 
   const analyzePatterns = async () => {
     if (trades.length < 3) { setPattern('Need at least 3 trades to analyze patterns.'); return; }
@@ -1254,7 +1458,9 @@ function Journal({ trades, setTrades }) {
               <input placeholder="Qty" type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
             </div>
             <textarea placeholder="Notes / lesson..." value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} className="w-full px-2 py-1.5 rounded text-sm" rows={2} style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
-            <button onClick={add} className="px-3 py-1.5 rounded text-sm font-semibold" style={{ background: COLORS.green, color: '#000' }}>Save Trade</button>
+            <button onClick={add} disabled={saving} className="px-3 py-1.5 rounded text-sm font-semibold flex items-center gap-1 disabled:opacity-50" style={{ background: COLORS.green, color: '#000' }}>
+              {saving && <Loader2 size={12} className="animate-spin" />} Save Trade
+            </button>
           </div>
         )}
         {trades.length === 0 ? (
