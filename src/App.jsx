@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { createChart, CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts';
 import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist } from './lib/supabase';
@@ -759,6 +760,176 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
   );
 }
 
+// ===== STOCK CHART =====
+function StockChart({ symbol }) {
+  const containerRef = useRef(null);
+  const chartRef      = useRef(null);
+  const candleRef     = useRef(null);
+  const lineRef       = useRef(null);
+  const volRef        = useRef(null);
+  const markersRef    = useRef(null);
+  const pendingMkRef  = useRef([]);
+
+  const [range,     setRange]     = useState('6M');
+  const [chartType, setChartType] = useState('candle');
+  const [loading,   setLoading]   = useState(false);
+  const [error,     setError]     = useState('');
+  const [divList,   setDivList]   = useState([]);
+
+  // ── Init chart once ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      layout:  { background: { color: '#141414' }, textColor: '#888' },
+      grid:    { vertLines: { color: '#1e1e1e' }, horzLines: { color: '#1e1e1e' } },
+      crosshair: { mode: 1 },
+      rightPriceScale: { borderColor: '#333' },
+      timeScale: { borderColor: '#333', timeVisible: true, secondsVisible: false },
+      height: 320,
+    });
+
+    const cSeries = chart.addSeries(CandlestickSeries, {
+      upColor: '#26a69a', downColor: '#ef5350',
+      borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+      wickUpColor:   '#26a69a', wickDownColor:   '#ef5350',
+    });
+    const lSeries = chart.addSeries(LineSeries, {
+      color: '#00c896', lineWidth: 2,
+    });
+    lSeries.applyOptions({ visible: false });
+
+    const vSeries = chart.addSeries(HistogramSeries, {
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'vol',
+    });
+    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+
+    chartRef.current  = chart;
+    candleRef.current = cSeries;
+    lineRef.current   = lSeries;
+    volRef.current    = vSeries;
+
+    // Resize observer
+    const ro = new ResizeObserver(() => {
+      if (containerRef.current) chart.applyOptions({ width: containerRef.current.offsetWidth });
+    });
+    ro.observe(containerRef.current);
+
+    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; };
+  }, []);
+
+  // ── Fetch when symbol/range changes ──────────────────────────────────────
+  useEffect(() => { if (symbol) loadChart(); }, [symbol, range]);
+
+  const loadChart = async () => {
+    if (!chartRef.current) return;
+    setLoading(true); setError('');
+    try {
+      const res  = await fetch(`${API_BASE}/api/market/chart/${encodeURIComponent(symbol)}?range=${range}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+
+      const validCandles = data.candles.filter(c => c.close != null);
+
+      candleRef.current?.setData(validCandles.map(c => ({
+        time: c.time, open: c.open, high: c.high, low: c.low, close: c.close,
+      })));
+      lineRef.current?.setData(validCandles.map(c => ({ time: c.time, value: c.close })));
+      volRef.current?.setData(validCandles.map(c => ({
+        time: c.time, value: c.volume,
+        color: c.close >= c.open ? '#26a69a44' : '#ef535044',
+      })));
+      chartRef.current?.timeScale().fitContent();
+
+      // Dividend markers
+      const divs = data.dividends || [];
+      setDivList(divs);
+      pendingMkRef.current = divs.map(d => ({
+        time: d.time, position: 'belowBar',
+        color: '#f59e0b', shape: 'arrowUp',
+        text: `÷${d.amount}`,
+      }));
+      applyMarkers();
+    } catch (e) {
+      setError(e.message || 'Failed to load chart');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const applyMarkers = () => {
+    if (!candleRef.current) return;
+    const markers = pendingMkRef.current;
+    try {
+      if (markersRef.current) markersRef.current.setMarkers(markers);
+      else markersRef.current = createSeriesMarkers(candleRef.current, markers);
+    } catch {
+      try { markersRef.current = createSeriesMarkers(candleRef.current, markers); } catch {}
+    }
+  };
+
+  const switchType = (type) => {
+    setChartType(type);
+    candleRef.current?.applyOptions({ visible: type === 'candle' });
+    lineRef.current?.applyOptions({ visible: type === 'line' });
+  };
+
+  return (
+    <Panel>
+      {/* Controls */}
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="flex gap-1">
+          {[['candle','🕯 Candle'],['line','📈 Line']].map(([t, label]) => (
+            <button key={t} onClick={() => switchType(t)}
+              className="px-3 py-1 rounded text-xs"
+              style={{ background: chartType === t ? COLORS.green : COLORS.panelLight, color: chartType === t ? '#000' : COLORS.textDim, border: `1px solid ${COLORS.border}` }}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1 flex-wrap">
+          {['1W','1M','3M','6M','1Y','5Y'].map(r => (
+            <button key={r} onClick={() => setRange(r)}
+              className="px-2 py-1 rounded text-xs font-mono"
+              style={{ background: range === r ? COLORS.green : COLORS.panelLight, color: range === r ? '#000' : COLORS.textDim, border: `1px solid ${COLORS.border}` }}>
+              {r}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Chart container */}
+      <div style={{ position: 'relative', height: '320px' }}>
+        {loading && (
+          <div className="absolute inset-0 flex items-center justify-center rounded" style={{ background: '#14141499', zIndex: 10 }}>
+            <Loader2 size={24} className="animate-spin" style={{ color: COLORS.green }} />
+          </div>
+        )}
+        <div ref={containerRef} style={{ width: '100%', height: '320px' }} />
+      </div>
+
+      {error && <p className="text-xs mt-2 flex items-center gap-1" style={{ color: COLORS.red }}>⚠ {error}</p>}
+
+      {/* Dividend chips */}
+      {divList.length > 0 && (
+        <div className="mt-3">
+          <p className="text-xs mb-1.5 flex items-center gap-1" style={{ color: COLORS.textDim }}>
+            💰 Dividends (last {Math.min(divList.length, 6)})
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {divList.slice(-6).map((d, i) => (
+              <span key={i} className="text-xs px-2 py-0.5 rounded font-mono"
+                style={{ background: '#f59e0b18', color: '#f59e0b', border: '1px solid #f59e0b33' }}>
+                {new Date(d.time * 1000).toLocaleDateString('en-MY', { day:'2-digit', month:'short', year:'2-digit' })} · {d.amount}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 // ===== ANALYZER =====
 function Analyzer({ capital, preFill, onConsumePreFill }) {
   const [query, setQuery] = useState('');
@@ -922,6 +1093,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
             </div>
             <p className="mt-3 text-sm leading-relaxed">{analysis.summary}</p>
           </Panel>
+          <StockChart symbol={analysis.ticker} />
           <div className="grid md:grid-cols-2 gap-3">
             <Panel>
               <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2"><TrendingUp size={14} /> Technical</h3>
@@ -957,10 +1129,13 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
       )}
 
       {fallbackText && !analysis && (
-        <Panel accent={COLORS.amber}>
-          <div className="flex items-center gap-2 mb-3"><AlertTriangle size={14} style={{ color: COLORS.amber }} /><h3 className="serif text-base font-semibold">Analysis (Text Mode)</h3></div>
-          <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{fallbackText}</ReactMarkdown></div>
-        </Panel>
+        <>
+          <StockChart symbol={query.toUpperCase().trim()} />
+          <Panel accent={COLORS.amber}>
+            <div className="flex items-center gap-2 mb-3"><AlertTriangle size={14} style={{ color: COLORS.amber }} /><h3 className="serif text-base font-semibold">Analysis (Text Mode)</h3></div>
+            <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{fallbackText}</ReactMarkdown></div>
+          </Panel>
+        </>
       )}
 
       {!searched && !loading && (
