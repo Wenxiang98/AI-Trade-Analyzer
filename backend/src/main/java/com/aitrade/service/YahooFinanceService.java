@@ -57,13 +57,14 @@ public class YahooFinanceService {
         HttpClient netty = HttpClient.create()
                 .httpResponseDecoder(spec -> spec.maxHeaderSize(64 * 1024))
                 .followRedirect(true)
+                .compress(true)   // auto-decompress gzip/deflate (needed for Yahoo Finance chart responses)
                 .responseTimeout(Duration.ofSeconds(20));
 
         this.httpClient = WebClient.builder()
                 .clientConnector(new ReactorClientHttpConnector(netty))
                 .defaultHeader(HttpHeaders.USER_AGENT, USER_AGENT)
                 .defaultHeader(HttpHeaders.ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-                .defaultHeader("Accept-Encoding", "gzip, deflate, br")
+                // Accept-Encoding is set automatically by compress(true) — don't duplicate it
                 .build();
     }
 

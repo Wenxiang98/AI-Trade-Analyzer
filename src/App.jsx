@@ -779,43 +779,56 @@ function StockChart({ symbol }) {
   // ── Init chart once ──────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
-      layout:  { background: { color: '#141414' }, textColor: '#888' },
-      grid:    { vertLines: { color: '#1e1e1e' }, horzLines: { color: '#1e1e1e' } },
-      crosshair: { mode: 1 },
-      rightPriceScale: { borderColor: '#333' },
-      timeScale: { borderColor: '#333', timeVisible: true, secondsVisible: false },
-      height: 320,
-    });
+    let chart = null;
+    let ro    = null;
+    try {
+      chart = createChart(containerRef.current, {
+        layout:  { background: { color: '#141414' }, textColor: '#888' },
+        grid:    { vertLines: { color: '#1e1e1e' }, horzLines: { color: '#1e1e1e' } },
+        crosshair: { mode: 1 },
+        rightPriceScale: { borderColor: '#333' },
+        timeScale: { borderColor: '#333', timeVisible: true, secondsVisible: false },
+        autoSize: true,   // v5: let the container CSS control sizing
+      });
 
-    const cSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#26a69a', downColor: '#ef5350',
-      borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-      wickUpColor:   '#26a69a', wickDownColor:   '#ef5350',
-    });
-    const lSeries = chart.addSeries(LineSeries, {
-      color: '#00c896', lineWidth: 2,
-    });
-    lSeries.applyOptions({ visible: false });
+      const cSeries = chart.addSeries(CandlestickSeries, {
+        upColor: '#26a69a', downColor: '#ef5350',
+        borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+        wickUpColor:   '#26a69a', wickDownColor:   '#ef5350',
+      });
+      const lSeries = chart.addSeries(LineSeries, {
+        color: '#00c896', lineWidth: 2,
+      });
+      try { lSeries.applyOptions({ visible: false }); } catch (_) {}
 
-    const vSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: 'volume' },
-      priceScaleId: 'vol',
-    });
-    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } });
+      const vSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'vol',
+      });
+      try { chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.85, bottom: 0 } }); } catch (_) {}
 
-    chartRef.current  = chart;
-    candleRef.current = cSeries;
-    lineRef.current   = lSeries;
-    volRef.current    = vSeries;
+      chartRef.current  = chart;
+      candleRef.current = cSeries;
+      lineRef.current   = lSeries;
+      volRef.current    = vSeries;
 
-    // Resize observer
-    const ro = new ResizeObserver(() => {
-      if (containerRef.current) chart.applyOptions({ width: containerRef.current.offsetWidth });
-    });
-    ro.observe(containerRef.current);
+      // Resize observer — keep for manual width sync on browsers where autoSize misses
+      ro = new ResizeObserver(() => {
+        if (containerRef.current && chart) {
+          chart.applyOptions({ width: containerRef.current.offsetWidth });
+        }
+      });
+      ro.observe(containerRef.current);
+    } catch (e) {
+      console.error('[StockChart] init failed:', e);
+      setError('Chart failed to load: ' + (e?.message || String(e)));
+    }
 
-    return () => { ro.disconnect(); chart.remove(); chartRef.current = null; };
+    return () => {
+      ro?.disconnect();
+      if (chart) { try { chart.remove(); } catch (_) {} }
+      chartRef.current = null;
+    };
   }, []);
 
   // ── Fetch when symbol/range changes ──────────────────────────────────────
