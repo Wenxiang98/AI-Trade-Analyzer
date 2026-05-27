@@ -129,16 +129,40 @@ public class MarketDataService {
 
     // ── Helpers ────────────────────────────────────────────────────────────────
 
+    /** Common Bursa Malaysia name-based aliases → numeric Bursa code */
+    private static final Map<String, String> BURSA_ALIAS = Map.ofEntries(
+        Map.entry("MAYBANK",  "1155"),
+        Map.entry("CIMB",     "1023"),
+        Map.entry("PBBANK",   "1295"),
+        Map.entry("SUNREIT",  "5176"),
+        Map.entry("TNB",      "5347"),
+        Map.entry("TENAGA",   "5347"),
+        Map.entry("IHH",      "4197"),
+        Map.entry("AXIATA",   "6888"),
+        Map.entry("MAXIS",    "6012"),
+        Map.entry("DIGI",     "6947"),
+        Map.entry("AIRASIA",  "5099"),
+        Map.entry("GENTING",  "3182"),
+        Map.entry("GENM",     "4715"),
+        Map.entry("RHBBANK",  "1066"),
+        Map.entry("AMBANK",   "1015"),
+        Map.entry("HLBANK",   "5819"),
+        Map.entry("PETGAS",   "6033"),
+        Map.entry("HAPSENG",  "3034")
+    );
+
     /**
      * Normalise a user-supplied symbol:
      *   - Trims whitespace and uppercases
-     *   - Pure numeric → append ".KL"  (Bursa Malaysia code, e.g. 1155 → 1155.KL)
+     *   - Pure numeric → append ".KL"  (e.g. 1155 → 1155.KL)
+     *   - Known Bursa name alias → map to numeric code + ".KL"  (e.g. SUNREIT → 5176.KL)
      *   - Everything else → returned as-is (e.g. AAPL, VOO, 5176.KL)
      */
     private String normalize(String symbol) {
         if (symbol == null) return "";
         String s = symbol.trim().toUpperCase();
-        if (s.matches("\\d+")) return s + ".KL";
+        if (s.matches("\\d+"))          return s + ".KL";
+        if (BURSA_ALIAS.containsKey(s)) return BURSA_ALIAS.get(s) + ".KL";
         return s;
     }
 
