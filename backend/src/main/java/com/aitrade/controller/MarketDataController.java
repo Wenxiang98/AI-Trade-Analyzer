@@ -31,6 +31,17 @@ public class MarketDataController {
     }
 
     /**
+     * Symbol search — resolves names/keywords to canonical tickers.
+     * GET /api/market/search?q=sunreit
+     * GET /api/market/search?q=apple
+     * Returns [{symbol, name, exchange, type}]
+     */
+    @GetMapping("/search")
+    public Mono<List<Map<String, Object>>> searchSymbols(@RequestParam String q) {
+        return marketDataService.searchSymbols(q.trim());
+    }
+
+    /**
      * Batch quotes for portfolio refresh.
      * GET /api/market/quotes?symbols=SUNREIT.KL,VOO,MAYBANK.KL
      */

@@ -35,9 +35,10 @@ public class YahooFinanceService {
     private static final Logger log = LoggerFactory.getLogger(YahooFinanceService.class);
 
     // Visit a known stock page (not root) — root often redirects to consent on servers
-    private static final String YF_WARMUP = "https://finance.yahoo.com/quote/VOO";
-    private static final String YF_CRUMB  = "https://query1.finance.yahoo.com/v1/test/getcrumb";
-    private static final String YF_QUOTE  = "https://query1.finance.yahoo.com/v7/finance/quote";
+    private static final String YF_WARMUP  = "https://finance.yahoo.com/quote/VOO";
+    private static final String YF_CRUMB   = "https://query1.finance.yahoo.com/v1/test/getcrumb";
+    private static final String YF_QUOTE   = "https://query1.finance.yahoo.com/v7/finance/quote";
+    private static final String YF_SEARCH  = "https://query1.finance.yahoo.com/v1/finance/search";
     private static final Duration CRUMB_TTL = Duration.ofMinutes(25);
 
     private static final String USER_AGENT =
@@ -66,6 +67,55 @@ public class YahooFinanceService {
     }
 
     // ── Public API ─────────────────────────────────────────────────────────────
+
+    /**
+     * Search for stocks/ETFs by name or ticker.
+     * Uses Yahoo Finance's public search endpoint — no cookies/crumb required.
+     * Returns up to 6 matches: symbol, name, exchange, type.
+     */
+    @SuppressWarnings("unchecked")
+    public Mono<List<Map<String, Object>>> searchSymbols(String query) {
+        String uri = YF_SEARCH + "?q=" + urlEncode(query)
+                + "&quotesCount=8&newsCount=0&listsCount=0&enableFuzzyQuery=true";
+        return httpClient.get()
+                .uri(uri)
+                .header(HttpHeaders.ACCEPT, "application/json,*/*")
+                .header("Referer", "https://finance.yahoo.com/")
+                .retrieve()
+                .bodyToMono(Map.class)
+                .map(body -> parseSearchResponse((Map<String, Object>) body))
+                .onErrorResume(e -> {
+                    log.error("Yahoo Finance search failed for {}: {}", query, e.getMessage());
+                    return Mono.just(Collections.emptyList());
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> parseSearchResponse(Map<String, Object> body) {
+        try {
+            List<Map<String, Object>> quotes = (List<Map<String, Object>>) body.get("quotes");
+            if (quotes == null) return Collections.emptyList();
+            return quotes.stream()
+                    .filter(q -> q.get("symbol") != null)
+                    .filter(q -> {
+                        String type = (String) q.get("quoteType");
+                        return "EQUITY".equals(type) || "ETF".equals(type) || "MUTUALFUND".equals(type);
+                    })
+                    .map(q -> {
+                        Map<String, Object> r = new HashMap<>();
+                        r.put("symbol",   q.get("symbol"));
+                        r.put("name",     q.getOrDefault("longname", q.getOrDefault("shortname", "")));
+                        r.put("exchange", q.getOrDefault("exchDisp", ""));
+                        r.put("type",     q.getOrDefault("typeDisp", ""));
+                        return r;
+                    })
+                    .limit(6)
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            log.error("Search parse error: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
 
     public Mono<List<Map<String, Object>>> fetchQuotes(List<String> symbols) {
         if (symbols.isEmpty()) return Mono.just(Collections.emptyList());

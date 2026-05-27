@@ -48,6 +48,10 @@ public class MarketDataService {
 
     // ── Public API ─────────────────────────────────────────────────────────────
 
+    public Mono<List<Map<String, Object>>> searchSymbols(String query) {
+        return yahooFinanceService.searchSymbols(query);
+    }
+
     public Mono<Map<String, Object>> fetchQuote(String symbol) {
         String normalized = normalize(symbol);
         if (isMalaysian(normalized)) {

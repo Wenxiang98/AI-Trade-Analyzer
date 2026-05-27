@@ -43,6 +43,17 @@ const DEFAULT_MODEL = 'claude-haiku-4-5';
 // ===== BACKEND API =====
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080';
 
+async function searchSymbols(query) {
+  if (!query || query.trim().length < 1) return [];
+  try {
+    const res = await fetch(`${API_BASE}/api/market/search?q=${encodeURIComponent(query.trim())}`);
+    if (!res.ok) return [];
+    return await res.json();
+  } catch {
+    return [];
+  }
+}
+
 async function fetchLivePrice(symbol) {
   try {
     const res = await fetch(`${API_BASE}/api/market/quote/${encodeURIComponent(symbol)}`);
@@ -725,13 +736,44 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
 
 // ===== PORTFOLIO =====
 function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refreshing }) {
-  const [showAdd, setShowAdd] = useState(false);
-  const [form, setForm] = useState({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
+  const [showAdd, setShowAdd]     = useState(false);
+  const [form, setForm]           = useState({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
+  const [symbolQuery, setSymbolQuery] = useState('');
+  const [symbolResults, setSymbolResults] = useState([]);
+  const [symbolSearching, setSymbolSearching] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const searchTimeout = useRef(null);
+
+  const handleSymbolInput = (val) => {
+    setSymbolQuery(val);
+    setForm(f => ({ ...f, symbol: val }));
+    setShowDropdown(true);
+    clearTimeout(searchTimeout.current);
+    if (val.trim().length < 1) { setSymbolResults([]); return; }
+    searchTimeout.current = setTimeout(async () => {
+      setSymbolSearching(true);
+      const results = await searchSymbols(val);
+      setSymbolResults(results);
+      setSymbolSearching(false);
+    }, 400);
+  };
+
+  const selectSymbol = async (result) => {
+    setSymbolQuery(result.symbol);
+    setForm(f => ({ ...f, symbol: result.symbol }));
+    setSymbolResults([]);
+    setShowDropdown(false);
+    // Auto-fetch current price
+    const live = await fetchLivePrice(result.symbol);
+    if (live?.price) setForm(f => ({ ...f, symbol: result.symbol, currentPrice: String(live.price) }));
+  };
 
   const add = () => {
     if (!form.symbol || !form.qty || !form.avgCost) return;
     setHoldings([...holdings, { symbol: form.symbol.toUpperCase(), qty: parseFloat(form.qty), avgCost: parseFloat(form.avgCost), currentPrice: parseFloat(form.currentPrice) || parseFloat(form.avgCost), market: form.market }]);
     setForm({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
+    setSymbolQuery('');
+    setSymbolResults([]);
     setShowAdd(false);
   };
 
@@ -769,12 +811,54 @@ function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refres
           <input type="number" value={cash} onChange={e => setCash(parseFloat(e.target.value) || 0)} className="block w-32 mt-1 px-2 py-1 rounded mono text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
         </div>
         {showAdd && (
-          <div className="mb-4 p-3 rounded grid grid-cols-2 md:grid-cols-5 gap-2" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
-            <input placeholder="Symbol" value={form.symbol} onChange={e => setForm({ ...form, symbol: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
-            <input placeholder="Qty" type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
-            <input placeholder="Avg Cost" type="number" step="0.01" value={form.avgCost} onChange={e => setForm({ ...form, avgCost: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
-            <input placeholder="Current Price" type="number" step="0.01" value={form.currentPrice} onChange={e => setForm({ ...form, currentPrice: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
-            <button onClick={add} className="px-3 py-1.5 rounded text-sm font-semibold" style={{ background: COLORS.green, color: '#000' }}>Save</button>
+          <div className="mb-4 p-3 rounded space-y-2" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+            {/* Symbol search row */}
+            <div className="relative">
+              <div className="flex items-center gap-1 px-2 py-1.5 rounded mono text-sm" style={{ background: COLORS.bg, border: `1px solid ${showDropdown && symbolResults.length > 0 ? COLORS.green : COLORS.border}` }}>
+                {symbolSearching
+                  ? <Loader2 size={12} className="animate-spin" style={{ color: COLORS.textDim, flexShrink: 0 }} />
+                  : <Search size={12} style={{ color: COLORS.textDim, flexShrink: 0 }} />}
+                <input
+                  placeholder="Search symbol or name — e.g. SUNREIT, apple, VOO"
+                  value={symbolQuery}
+                  onChange={e => handleSymbolInput(e.target.value)}
+                  onFocus={() => symbolResults.length > 0 && setShowDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowDropdown(false), 150)}
+                  className="flex-1 outline-none bg-transparent mono text-sm"
+                  style={{ color: COLORS.text }}
+                />
+                {symbolQuery && (
+                  <button onMouseDown={e => { e.preventDefault(); setSymbolQuery(''); setForm(f => ({ ...f, symbol: '', currentPrice: '' })); setSymbolResults([]); }}>
+                    <X size={12} style={{ color: COLORS.textDim }} />
+                  </button>
+                )}
+              </div>
+              {showDropdown && symbolResults.length > 0 && (
+                <div className="absolute z-50 w-full mt-1 rounded overflow-hidden shadow-xl" style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+                  {symbolResults.map((r, i) => (
+                    <button
+                      key={i}
+                      onMouseDown={e => { e.preventDefault(); selectSymbol(r); }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-opacity-80 text-sm"
+                      style={{ background: i % 2 === 0 ? COLORS.panelLight : COLORS.panel, borderBottom: `1px solid ${COLORS.border}` }}
+                    >
+                      <div>
+                        <span className="mono font-bold" style={{ color: COLORS.green }}>{r.symbol}</span>
+                        <span className="ml-2 text-xs" style={{ color: COLORS.text }}>{r.name}</span>
+                      </div>
+                      <span className="text-[10px] mono ml-2 whitespace-nowrap" style={{ color: COLORS.textDim }}>{r.exchange}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Remaining fields */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              <input placeholder="Qty" type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <input placeholder="Avg Cost" type="number" step="0.01" value={form.avgCost} onChange={e => setForm({ ...form, avgCost: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <input placeholder="Current Price (auto-filled)" type="number" step="0.01" value={form.currentPrice} onChange={e => setForm({ ...form, currentPrice: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <button onClick={add} disabled={!form.symbol || !form.qty || !form.avgCost} className="px-3 py-1.5 rounded text-sm font-semibold disabled:opacity-40" style={{ background: COLORS.green, color: '#000' }}>Save</button>
+            </div>
           </div>
         )}
         {holdings.length === 0 ? (
