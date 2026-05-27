@@ -49,17 +49,20 @@ public class MarketDataService {
     // ── Public API ─────────────────────────────────────────────────────────────
 
     public Mono<Map<String, Object>> fetchQuote(String symbol) {
-        if (isMalaysian(symbol)) {
-            log.info("Routing {} → Yahoo Finance", symbol);
-            return yahooFinanceService.fetchQuote(symbol);
+        String normalized = normalize(symbol);
+        if (isMalaysian(normalized)) {
+            log.info("Routing {} → Yahoo Finance (as {})", symbol, normalized);
+            return yahooFinanceService.fetchQuote(normalized);
         }
-        log.info("Routing {} → Twelve Data", symbol);
-        return fetchFromTwelveData(symbol);
+        log.info("Routing {} → Twelve Data", normalized);
+        return fetchFromTwelveData(normalized);
     }
 
     public Mono<List<Map<String, Object>>> fetchQuotes(List<String> symbols) {
-        List<String> usSymbols = symbols.stream().filter(s -> !isMalaysian(s)).toList();
-        List<String> mySymbols = symbols.stream().filter(this::isMalaysian).toList();
+        List<String> normalized = symbols.stream().map(this::normalize).toList();
+
+        List<String> usSymbols = normalized.stream().filter(s -> !isMalaysian(s)).toList();
+        List<String> mySymbols = normalized.stream().filter(this::isMalaysian).toList();
 
         Mono<List<Map<String, Object>>> usMono = usSymbols.isEmpty()
                 ? Mono.just(List.of())
@@ -125,6 +128,19 @@ public class MarketDataService {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
+
+    /**
+     * Normalise a user-supplied symbol:
+     *   - Trims whitespace and uppercases
+     *   - Pure numeric → append ".KL"  (Bursa Malaysia code, e.g. 1155 → 1155.KL)
+     *   - Everything else → returned as-is (e.g. AAPL, VOO, 5176.KL)
+     */
+    private String normalize(String symbol) {
+        if (symbol == null) return "";
+        String s = symbol.trim().toUpperCase();
+        if (s.matches("\\d+")) return s + ".KL";
+        return s;
+    }
 
     private boolean isMalaysian(String symbol) {
         return symbol != null && symbol.toUpperCase().endsWith(".KL");
