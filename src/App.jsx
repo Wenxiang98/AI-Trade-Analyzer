@@ -67,17 +67,16 @@ async function fetchLivePrice(symbol) {
 
 async function fetchLivePrices(symbols) {
   if (!symbols.length) return {};
+  // Fire individual calls in parallel, keyed by the ORIGINAL holding symbol.
+  // The batch endpoint returns normalised symbols (e.g. SUNREIT → 5176.KL) which
+  // don't match what's stored in the portfolio, so batch lookups silently miss.
   try {
-    const res = await fetch(`${API_BASE}/api/market/quotes?symbols=${symbols.join(',')}`);
-    if (!res.ok) return {};
-    const list = await res.json();
+    const entries = await Promise.all(
+      symbols.map(async sym => [sym, await fetchLivePrice(sym)])
+    );
     const map = {};
-    list.forEach(p => {
-      if (!p.error) {
-        map[p.symbol] = p;                           // e.g. "1155.KL"
-        if (p.symbol.endsWith('.KL'))
-          map[p.symbol.slice(0, -3)] = p;            // also "1155" — covers holdings stored without suffix
-      }
+    entries.forEach(([sym, data]) => {
+      if (data && !data.error) map[sym] = data;
     });
     return map;
   } catch {
