@@ -241,6 +241,36 @@ export async function saveSnapshot(userId, snapshot) {
   if (error) throw error;
 }
 
+// ── Watchlist ──────────────────────────────────────────────────────────────
+
+export async function getWatchlist(userId) {
+  const { data, error } = await supabase
+    .from('watchlist')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at');
+  if (error) throw error;
+  return data || [];
+}
+
+export async function addToWatchlist(userId, item) {
+  const { data, error } = await supabase
+    .from('watchlist')
+    .upsert(
+      { user_id: userId, symbol: item.symbol, name: item.name || '', exchange: item.exchange || '' },
+      { onConflict: 'user_id,symbol' }
+    )
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function removeFromWatchlist(itemId) {
+  const { error } = await supabase.from('watchlist').delete().eq('id', itemId);
+  if (error) throw error;
+}
+
 export async function getSnapshots(userId, limit = 30) {
   const { data, error } = await supabase
     .from('portfolio_snapshots')

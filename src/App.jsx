@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut } from 'lucide-react';
+import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots } from './lib/supabase';
+import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
 
 const COLORS = {
@@ -189,6 +189,8 @@ function TradeDesk({ session, profile, onSignOut }) {
   const [alerts,           setAlerts]           = useState([]);
   const [snapshots,        setSnapshots]        = useState([]);
   const [triggeredAlerts,  setTriggeredAlerts]  = useState([]);
+  const [watchlist,        setWatchlist]        = useState([]);
+  const [analyzerPreFill,  setAnalyzerPreFill]  = useState(null);
   const [showSettings,     setShowSettings]     = useState(false);
   const [refreshing,       setRefreshing]       = useState(false);
   const [portfolioLoading, setPortfolioLoading] = useState(true);
@@ -207,18 +209,20 @@ function TradeDesk({ session, profile, onSignOut }) {
     (async () => {
       setPortfolioLoading(true);
       try {
-        const [rows, prof, journalRows, alertRows, snapshotRows] = await Promise.all([
+        const [rows, prof, journalRows, alertRows, snapshotRows, watchRows] = await Promise.all([
           getPortfolio(userId),
           getProfile(userId),
           getJournalTrades(userId),
           getAlerts(userId),
           getSnapshots(userId, 30),
+          getWatchlist(userId),
         ]);
         setHoldings(rows);
         setCash(Number(prof?.cash ?? 0));
         setTrades(journalRows);
         setAlerts(alertRows);
         setSnapshots(snapshotRows);
+        setWatchlist(watchRows);
       } catch (e) { console.error('Failed to load data:', e); }
       setPortfolioLoading(false);
     })();
@@ -299,6 +303,26 @@ function TradeDesk({ session, profile, onSignOut }) {
     } catch (e) { console.error('Remove alert failed:', e); }
   };
 
+  // ── Watchlist mutations ────────────────────────────────────────────────────
+  const handleAddToWatchlist = async (item) => {
+    try {
+      const saved = await addToWatchlist(userId, item);
+      setWatchlist(prev => prev.some(w => w.symbol === saved.symbol) ? prev : [...prev, saved]);
+    } catch (e) { console.error('Add to watchlist failed:', e); }
+  };
+
+  const handleRemoveFromWatchlist = async (itemId) => {
+    try {
+      await removeFromWatchlist(itemId);
+      setWatchlist(prev => prev.filter(w => w.id !== itemId));
+    } catch (e) { console.error('Remove from watchlist failed:', e); }
+  };
+
+  const handleAnalyzeFromWatchlist = (symbol, name) => {
+    setAnalyzerPreFill({ symbol, name: name || '' });
+    setTab('analyzer');
+  };
+
   // ── Live price refresh + alert check + snapshot ────────────────────────────
   const refreshPrices = async () => {
     const currentHoldings = holdings;
@@ -349,12 +373,13 @@ function TradeDesk({ session, profile, onSignOut }) {
   const totalAssets = portfolioValue + cash;
 
   const tabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-    { id: 'analyzer', label: 'Analyzer', icon: Search },
-    { id: 'portfolio', label: 'Portfolio', icon: Wallet },
-    { id: 'sizing', label: 'Sizing', icon: Calculator },
-    { id: 'chat', label: 'AI Chat', icon: MessageSquare },
-    { id: 'journal', label: 'Journal', icon: BookOpen },
+    { id: 'dashboard',  label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'watchlist',  label: 'Watchlist', icon: Eye },
+    { id: 'analyzer',  label: 'Analyzer',  icon: Search },
+    { id: 'portfolio',  label: 'Portfolio', icon: Wallet },
+    { id: 'sizing',     label: 'Sizing',    icon: Calculator },
+    { id: 'chat',       label: 'AI Chat',   icon: MessageSquare },
+    { id: 'journal',    label: 'Journal',   icon: BookOpen },
   ];
 
   return (
@@ -434,7 +459,16 @@ function TradeDesk({ session, profile, onSignOut }) {
         ))}
 
         {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} snapshots={snapshots} lastRefreshed={lastRefreshed} />}
-        {tab === 'analyzer' && <Analyzer capital={capital} />}
+        {tab === 'watchlist' && (
+          <Watchlist
+            items={watchlist}
+            onAdd={handleAddToWatchlist}
+            onRemove={handleRemoveFromWatchlist}
+            onAnalyze={handleAnalyzeFromWatchlist}
+            onAddToPortfolio={handleAddHolding}
+          />
+        )}
+        {tab === 'analyzer' && <Analyzer capital={capital} preFill={analyzerPreFill} onConsumePreFill={() => setAnalyzerPreFill(null)} />}
         {tab === 'portfolio' && (
           <Portfolio
             holdings={holdings}
@@ -727,7 +761,7 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
 }
 
 // ===== ANALYZER =====
-function Analyzer({ capital }) {
+function Analyzer({ capital, preFill, onConsumePreFill }) {
   const [query, setQuery] = useState('');
   const [suggestions, setSuggestions] = useState([]);
   const [analysis, setAnalysis] = useState(null);
@@ -736,6 +770,15 @@ function Analyzer({ capital }) {
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState('');
   const [searched, setSearched] = useState(false);
+
+  // Auto-analyze when launched from Watchlist
+  useEffect(() => {
+    if (preFill?.symbol && !analyzing && !analysis) {
+      setQuery(preFill.symbol);
+      analyzeticker(preFill.symbol, preFill.name || '', '');
+      onConsumePreFill?.();
+    }
+  }, [preFill?.symbol]);
 
   const search = async () => {
     if (!query.trim()) return;
@@ -935,6 +978,246 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
           </div>
         </Panel>
       )}
+    </div>
+  );
+}
+
+// ===== WATCHLIST =====
+function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
+  const [prices,          setPrices]          = useState({});
+  const [loadingPrices,   setLoadingPrices]   = useState(false);
+  const [scans,           setScans]           = useState({});
+  const [addingSymbol,    setAddingSymbol]     = useState(null);
+  const [portfolioForm,   setPortfolioForm]   = useState({ qty: '', avgCost: '' });
+  const [symbolQuery,     setSymbolQuery]     = useState('');
+  const [symbolResults,   setSymbolResults]   = useState([]);
+  const [symbolSearching, setSymbolSearching] = useState(false);
+  const [showSearch,      setShowSearch]      = useState(false);
+  const searchTimeout = useRef(null);
+
+  useEffect(() => { if (items.length > 0) fetchPrices(); }, [items.length]);
+
+  const fetchPrices = async () => {
+    setLoadingPrices(true);
+    const entries = await Promise.all(items.map(async i => [i.symbol, await fetchLivePrice(i.symbol)]));
+    const map = {};
+    entries.forEach(([sym, data]) => { if (data && !data.error) map[sym] = data; });
+    setPrices(map);
+    setLoadingPrices(false);
+  };
+
+  const quickScan = async (symbol, name) => {
+    setScans(prev => ({ ...prev, [symbol]: { loading: true } }));
+    try {
+      const p = prices[symbol];
+      const priceStr = p ? `Current price: ${p.price} ${p.currency}, change: ${p.changePct}%` : '';
+      const result = await callClaude(
+        `Quick BUY/HOLD/SELL verdict for ${symbol} (${name}). ${priceStr}. Return ONLY JSON: {"verdict":"BUY","confidence":7,"reason":"one sentence"}`, 200
+      );
+      const parsed = parseJSON(result);
+      setScans(prev => ({ ...prev, [symbol]: parsed || { verdict: '?', confidence: 5, reason: '' } }));
+    } catch (e) {
+      setScans(prev => ({ ...prev, [symbol]: { verdict: 'ERR' } }));
+    }
+  };
+
+  const handleSymbolInput = (val) => {
+    setSymbolQuery(val);
+    clearTimeout(searchTimeout.current);
+    if (!val.trim()) { setSymbolResults([]); return; }
+    searchTimeout.current = setTimeout(async () => {
+      setSymbolSearching(true);
+      setSymbolResults(await searchSymbols(val));
+      setSymbolSearching(false);
+    }, 400);
+  };
+
+  const selectAndAdd = (r) => {
+    onAdd({ symbol: r.symbol, name: r.name, exchange: r.exchange });
+    setSymbolQuery(''); setSymbolResults([]); setShowSearch(false);
+  };
+
+  const verdictStyle = (v) => ({
+    BUY:  { bg: COLORS.green + '22', color: COLORS.green,  border: COLORS.green + '44' },
+    SELL: { bg: COLORS.red   + '22', color: COLORS.red,    border: COLORS.red   + '44' },
+    HOLD: { bg: COLORS.amber + '22', color: COLORS.amber,  border: COLORS.amber + '44' },
+  }[v] || { bg: COLORS.panelLight, color: COLORS.textDim, border: COLORS.border });
+
+  return (
+    <div className="space-y-4">
+      <Panel>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="serif text-lg font-semibold flex items-center gap-2">
+            <Eye size={16} style={{ color: COLORS.green }} /> Watchlist
+            {items.length > 0 && <span className="mono text-xs px-2 py-0.5 rounded" style={{ background: COLORS.panelLight, color: COLORS.textDim }}>{items.length}</span>}
+          </h2>
+          <div className="flex gap-2">
+            <button onClick={fetchPrices} disabled={loadingPrices || !items.length}
+              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded disabled:opacity-40"
+              style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}>
+              {loadingPrices ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+            <button onClick={() => setShowSearch(s => !s)}
+              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded"
+              style={{ background: COLORS.green, color: '#000' }}>
+              <Plus size={14} /> Watch
+            </button>
+          </div>
+        </div>
+
+        {/* Symbol search */}
+        {showSearch && (
+          <div className="mb-4 relative">
+            <div className="flex items-center gap-1 px-2 py-1.5 rounded mono text-sm"
+              style={{ background: COLORS.bg, border: `1px solid ${symbolResults.length ? COLORS.green : COLORS.border}` }}>
+              {symbolSearching ? <Loader2 size={12} className="animate-spin" style={{ color: COLORS.textDim }} /> : <Search size={12} style={{ color: COLORS.textDim }} />}
+              <input
+                placeholder="Search symbol or name to watch…"
+                value={symbolQuery}
+                onChange={e => handleSymbolInput(e.target.value)}
+                onBlur={() => setTimeout(() => setSymbolResults([]), 150)}
+                className="flex-1 outline-none bg-transparent mono text-sm" style={{ color: COLORS.text }}
+                autoFocus
+              />
+              {symbolQuery && <button onMouseDown={e => { e.preventDefault(); setSymbolQuery(''); setSymbolResults([]); }}><X size={12} style={{ color: COLORS.textDim }} /></button>}
+            </div>
+            {symbolResults.length > 0 && (
+              <div className="absolute z-50 w-full mt-1 rounded overflow-hidden shadow-xl" style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
+                {symbolResults.map((r, i) => (
+                  <button key={i} onMouseDown={e => { e.preventDefault(); selectAndAdd(r); }}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm"
+                    style={{ background: i % 2 === 0 ? COLORS.panelLight : COLORS.panel, borderBottom: `1px solid ${COLORS.border}` }}>
+                    <div>
+                      <span className="mono font-bold" style={{ color: COLORS.green }}>{r.symbol}</span>
+                      <span className="ml-2 text-xs" style={{ color: COLORS.text }}>{r.name}</span>
+                    </div>
+                    <span className="text-[10px] mono" style={{ color: COLORS.textDim }}>{r.exchange}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* List */}
+        {items.length === 0 ? (
+          <div className="py-10 text-center" style={{ color: COLORS.textDim }}>
+            <Eye size={28} className="mx-auto mb-2 opacity-20" />
+            <p className="text-sm">No stocks on watchlist.</p>
+            <p className="text-xs mt-1">Click "+ Watch" to add stocks you're tracking.</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {items.map(item => {
+              const price   = prices[item.symbol];
+              const scan    = scans[item.symbol];
+              const isAdding = addingSymbol === item.symbol;
+              const vs      = scan && !scan.loading && scan.verdict ? verdictStyle(scan.verdict) : null;
+
+              return (
+                <div key={item.id}>
+                  <div className="flex items-center justify-between px-3 py-2.5 rounded"
+                    style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+                    {/* Left: symbol + name */}
+                    <div className="flex-1 min-w-0">
+                      <span className="font-bold mono text-sm" style={{ color: COLORS.green }}>{item.symbol}</span>
+                      <span className="text-xs ml-2 truncate" style={{ color: COLORS.text }}>{item.name}</span>
+                      {item.exchange && <span className="text-[10px] mono ml-2" style={{ color: COLORS.textDim }}>{item.exchange}</span>}
+                    </div>
+
+                    {/* Right: price + actions */}
+                    <div className="flex items-center gap-2 flex-shrink-0">
+                      {/* Price */}
+                      {price ? (
+                        <div className="text-right mr-1">
+                          <div className="mono text-sm font-semibold">{price.currency} {price.price}</div>
+                          <div className="mono text-[11px]" style={{ color: price.changePct >= 0 ? COLORS.green : COLORS.red }}>
+                            {price.changePct >= 0 ? '+' : ''}{price.changePct}%
+                          </div>
+                        </div>
+                      ) : loadingPrices ? (
+                        <Loader2 size={13} className="animate-spin mr-1" style={{ color: COLORS.textDim }} />
+                      ) : null}
+
+                      {/* AI verdict badge */}
+                      {vs && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded mono font-bold"
+                          style={{ background: vs.bg, color: vs.color, border: `1px solid ${vs.border}` }}>
+                          {scan.verdict}
+                        </span>
+                      )}
+
+                      {/* Scan button (show if no scan yet) */}
+                      {!scan && (
+                        <button onClick={() => quickScan(item.symbol, item.name)}
+                          className="text-[11px] px-2 py-1 rounded"
+                          style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.textDim }}>
+                          Scan
+                        </button>
+                      )}
+                      {scan?.loading && <Loader2 size={13} className="animate-spin" style={{ color: COLORS.textDim }} />}
+
+                      {/* Analyze */}
+                      <button onClick={() => onAnalyze(item.symbol, item.name)}
+                        className="text-[11px] px-2 py-1 rounded"
+                        style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.blue}44`, color: COLORS.blue }}>
+                        Analyze →
+                      </button>
+
+                      {/* + Portfolio */}
+                      <button onClick={() => { setAddingSymbol(isAdding ? null : item.symbol); setPortfolioForm({ qty: '', avgCost: String(price?.price || '') }); }}
+                        className="text-[11px] px-2 py-1 rounded"
+                        style={{ background: isAdding ? COLORS.green : COLORS.panelLight, color: isAdding ? '#000' : COLORS.green, border: `1px solid ${COLORS.green}55` }}>
+                        + Port
+                      </button>
+
+                      <button onClick={() => onRemove(item.id)} className="opacity-40 hover:opacity-100 ml-1">
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Inline scan reason */}
+                  {scan && !scan.loading && scan.reason && (
+                    <div className="px-3 py-1.5 text-[11px] rounded-b -mt-1" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: 'none', color: COLORS.textDim }}>
+                      {scan.reason}
+                    </div>
+                  )}
+
+                  {/* Inline add to portfolio form */}
+                  {isAdding && (
+                    <div className="flex items-center gap-2 px-3 py-2 rounded-b -mt-1 flex-wrap"
+                      style={{ background: COLORS.bg, border: `1px solid ${COLORS.green}44`, borderTop: 'none' }}>
+                      <span className="text-xs mono" style={{ color: COLORS.textDim }}>Qty:</span>
+                      <input type="number" placeholder="300" value={portfolioForm.qty}
+                        onChange={e => setPortfolioForm(f => ({ ...f, qty: e.target.value }))}
+                        className="w-20 px-2 py-1 rounded mono text-sm"
+                        style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+                      <span className="text-xs mono" style={{ color: COLORS.textDim }}>Avg Cost:</span>
+                      <input type="number" step="0.01" placeholder="2.16" value={portfolioForm.avgCost}
+                        onChange={e => setPortfolioForm(f => ({ ...f, avgCost: e.target.value }))}
+                        className="w-24 px-2 py-1 rounded mono text-sm"
+                        style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+                      <button
+                        disabled={!portfolioForm.qty || !portfolioForm.avgCost}
+                        onClick={() => {
+                          onAddToPortfolio({ symbol: item.symbol, qty: parseFloat(portfolioForm.qty), avgCost: parseFloat(portfolioForm.avgCost), currentPrice: price?.price || parseFloat(portfolioForm.avgCost), market: item.exchange?.toLowerCase().includes('kuala') ? 'MYR' : 'USD' });
+                          setAddingSymbol(null);
+                        }}
+                        className="px-3 py-1 rounded text-sm font-semibold disabled:opacity-40"
+                        style={{ background: COLORS.green, color: '#000' }}>
+                        Confirm
+                      </button>
+                      <button onClick={() => setAddingSymbol(null)} className="text-sm" style={{ color: COLORS.textDim }}>Cancel</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
