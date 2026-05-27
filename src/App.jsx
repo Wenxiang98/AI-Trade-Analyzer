@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from 'recharts';
-import { supabase, getProfile, updateApiKey } from './lib/supabase';
+import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
 
 const COLORS = {
@@ -19,7 +19,7 @@ const COLORS = {
 
 const PIE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#a855f7', '#ec4899', '#06b6d4'];
 
-// ===== STORAGE (localStorage for deployed app) =====
+// ===== STORAGE (localStorage — settings only, not portfolio) =====
 const storage = {
   get(key, fallback) {
     try {
@@ -178,38 +178,106 @@ export default function App() {
 // ===== TRADE DESK =====
 function TradeDesk({ session, profile, onSignOut }) {
   const userName = profile?.name || session.user.email?.split('@')[0] || 'Trader';
+  const userId   = session.user.id;
 
-  const [tab, setTab] = useState('dashboard');
-  const [holdings, setHoldings] = useState(() => storage.get('portfolio:holdings', []));
-  const [cash, setCash] = useState(() => storage.get('portfolio:cash', 0));
-  const [capital, setCapital] = useState(() => storage.get('settings:capital', 1000));
-  const [riskPct, setRiskPct] = useState(() => storage.get('settings:riskPct', 2));
-  const [trades, setTrades] = useState(() => storage.get('journal:trades', []));
+  const [tab,          setTab]          = useState('dashboard');
+  const [holdings,     setHoldings]     = useState([]);
+  const [cash,         setCash]         = useState(0);
+  const [capital,      setCapital]      = useState(() => storage.get('settings:capital', 1000));
+  const [riskPct,      setRiskPct]      = useState(() => storage.get('settings:riskPct', 2));
+  const [trades,       setTrades]       = useState(() => storage.get('journal:trades', []));
   const [showSettings, setShowSettings] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
+  const [refreshing,   setRefreshing]   = useState(false);
+  const [portfolioLoading, setPortfolioLoading] = useState(true);
+  const cashSaveRef = useRef(null);
 
-  useEffect(() => { storage.set('portfolio:holdings', holdings); }, [holdings]);
-  useEffect(() => { storage.set('portfolio:cash', cash); }, [cash]);
+  // ── Settings still in localStorage (device-specific) ──────────────────────
   useEffect(() => { storage.set('settings:capital', capital); }, [capital]);
   useEffect(() => { storage.set('settings:riskPct', riskPct); }, [riskPct]);
   useEffect(() => { storage.set('journal:trades', trades); }, [trades]);
 
-  // ── Live price refresh ──────────────────────────────────────────────────────
+  // ── Load portfolio from Supabase on login ──────────────────────────────────
+  useEffect(() => {
+    (async () => {
+      setPortfolioLoading(true);
+      try {
+        const [rows, prof] = await Promise.all([
+          getPortfolio(userId),
+          getProfile(userId),
+        ]);
+        setHoldings(rows);
+        setCash(Number(prof?.cash ?? 0));
+      } catch (e) {
+        console.error('Failed to load portfolio:', e);
+      }
+      setPortfolioLoading(false);
+    })();
+  }, [userId]);
+
+  // ── Cash change — debounced save to Supabase ───────────────────────────────
+  const handleCashChange = (val) => {
+    const num = parseFloat(val) || 0;
+    setCash(num);
+    clearTimeout(cashSaveRef.current);
+    cashSaveRef.current = setTimeout(() => {
+      saveCash(userId, num).catch(console.error);
+    }, 800);
+  };
+
+  // ── Holdings mutations ─────────────────────────────────────────────────────
+  const handleAddHolding = async (holdingData) => {
+    try {
+      const saved = await addHolding(userId, holdingData);
+      setHoldings(prev => [...prev, saved]);
+    } catch (e) { console.error('Add holding failed:', e); }
+  };
+
+  const handleRemoveHolding = async (holdingId) => {
+    try {
+      await removeHolding(holdingId);
+      setHoldings(prev => prev.filter(h => h.id !== holdingId));
+    } catch (e) { console.error('Remove holding failed:', e); }
+  };
+
+  const handleUpdatePrice = (holdingId, price) => {
+    const p = parseFloat(price) || 0;
+    setHoldings(prev => prev.map(h => h.id === holdingId ? { ...h, currentPrice: p } : h));
+  };
+
+  const handleUpdatePriceBlur = (holdingId, price) => {
+    const p = parseFloat(price) || 0;
+    if (p > 0) updateHoldingPrice(holdingId, p).catch(console.error);
+  };
+
+  const handleReplacePortfolio = async (newHoldings) => {
+    try {
+      const saved = await replacePortfolio(userId, newHoldings);
+      setHoldings(saved);
+    } catch (e) { console.error('Replace portfolio failed:', e); throw e; }
+  };
+
+  // ── Live price refresh ─────────────────────────────────────────────────────
   const refreshPrices = async () => {
     const symbols = holdings.map(h => h.symbol).filter(Boolean);
     if (!symbols.length) return;
     setRefreshing(true);
     try {
-      const priceMap = await fetchLivePrices(symbols);
-      if (Object.keys(priceMap).length > 0) {
-        setHoldings(prev => prev.map(h => ({
-          ...h,
-          currentPrice: priceMap[h.symbol]?.price ?? h.currentPrice,
-        })));
-      }
-    } catch (e) {
-      console.error('Price refresh failed:', e);
-    }
+      const entries = await Promise.all(symbols.map(async sym => [sym, await fetchLivePrice(sym)]));
+      const updates = {};
+      entries.forEach(([sym, data]) => { if (data?.price) updates[sym] = data.price; });
+
+      setHoldings(prev => prev.map(h => ({
+        ...h,
+        currentPrice: updates[h.symbol] ?? h.currentPrice,
+      })));
+
+      // Persist updated prices to Supabase
+      await Promise.all(
+        holdings
+          .filter(h => updates[h.symbol])
+          .map(h => updateHoldingPrice(h.id, updates[h.symbol]))
+      );
+    } catch (e) { console.error('Price refresh failed:', e); }
     setRefreshing(false);
   };
 
@@ -293,7 +361,21 @@ function TradeDesk({ session, profile, onSignOut }) {
       <main className="max-w-7xl mx-auto px-4 py-6">
         {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} />}
         {tab === 'analyzer' && <Analyzer capital={capital} />}
-        {tab === 'portfolio' && <Portfolio holdings={holdings} setHoldings={setHoldings} cash={cash} setCash={setCash} refreshPrices={refreshPrices} refreshing={refreshing} />}
+        {tab === 'portfolio' && (
+          <Portfolio
+            holdings={holdings}
+            onAddHolding={handleAddHolding}
+            onRemoveHolding={handleRemoveHolding}
+            onUpdatePrice={handleUpdatePrice}
+            onUpdatePriceBlur={handleUpdatePriceBlur}
+            onReplacePortfolio={handleReplacePortfolio}
+            cash={cash}
+            onCashChange={handleCashChange}
+            refreshPrices={refreshPrices}
+            refreshing={refreshing}
+            loading={portfolioLoading}
+          />
+        )}
         {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
         {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} userName={userName} />}
         {tab === 'journal' && <Journal trades={trades} setTrades={setTrades} />}
@@ -734,15 +816,21 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
 }
 
 // ===== PORTFOLIO =====
-function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refreshing }) {
-  const [showAdd, setShowAdd]     = useState(false);
-  const [form, setForm]           = useState({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
+function Portfolio({ holdings, onAddHolding, onRemoveHolding, onUpdatePrice, onUpdatePriceBlur, onReplacePortfolio, cash, onCashChange, refreshPrices, refreshing, loading }) {
+  const [showAdd, setShowAdd]         = useState(false);
+  const [saving, setSaving]           = useState(false);
+  const [form, setForm]               = useState({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
   const [symbolQuery, setSymbolQuery] = useState('');
   const [symbolResults, setSymbolResults] = useState([]);
   const [symbolSearching, setSymbolSearching] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [csvError, setCsvError]       = useState('');
+  const [csvPreview, setCsvPreview]   = useState(null);   // parsed rows before confirm
+  const [importing, setImporting]     = useState(false);
   const searchTimeout = useRef(null);
+  const fileRef       = useRef(null);
 
+  // ── Symbol search ──────────────────────────────────────────────────────────
   const handleSymbolInput = (val) => {
     setSymbolQuery(val);
     setForm(f => ({ ...f, symbol: val }));
@@ -762,56 +850,172 @@ function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refres
     setForm(f => ({ ...f, symbol: result.symbol }));
     setSymbolResults([]);
     setShowDropdown(false);
-    // Auto-fetch current price
     const live = await fetchLivePrice(result.symbol);
     if (live?.price) setForm(f => ({ ...f, symbol: result.symbol, currentPrice: String(live.price) }));
   };
 
-  const add = () => {
+  // ── Add holding ────────────────────────────────────────────────────────────
+  const handleAdd = async () => {
     if (!form.symbol || !form.qty || !form.avgCost) return;
-    setHoldings([...holdings, { symbol: form.symbol.toUpperCase(), qty: parseFloat(form.qty), avgCost: parseFloat(form.avgCost), currentPrice: parseFloat(form.currentPrice) || parseFloat(form.avgCost), market: form.market }]);
+    setSaving(true);
+    await onAddHolding({
+      symbol:       form.symbol.toUpperCase(),
+      qty:          parseFloat(form.qty),
+      avgCost:      parseFloat(form.avgCost),
+      currentPrice: parseFloat(form.currentPrice) || parseFloat(form.avgCost),
+      market:       form.market,
+    });
     setForm({ symbol: '', qty: '', avgCost: '', currentPrice: '', market: 'MYR' });
     setSymbolQuery('');
     setSymbolResults([]);
     setShowAdd(false);
+    setSaving(false);
   };
 
-  const remove = (i) => setHoldings(holdings.filter((_, idx) => idx !== i));
-  const updatePrice = (i, newPrice) => {
-    const updated = [...holdings];
-    updated[i].currentPrice = parseFloat(newPrice) || updated[i].currentPrice;
-    setHoldings(updated);
+  // ── CSV import ─────────────────────────────────────────────────────────────
+  const parseMoomooCSV = (text) => {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length < 2) throw new Error('CSV appears empty');
+
+    // Find header row (contains Symbol or Ticker)
+    let headerIdx = lines.findIndex(l => /symbol|ticker/i.test(l));
+    if (headerIdx === -1) headerIdx = 0;
+
+    const headers = lines[headerIdx].split(',').map(h => h.trim().toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+    // Column index helpers
+    const col = (...names) => {
+      for (const n of names) {
+        const i = headers.findIndex(h => h.includes(n));
+        if (i !== -1) return i;
+      }
+      return -1;
+    };
+
+    const symIdx  = col('symbol', 'ticker', 'code');
+    const qtyIdx  = col('qty', 'quantity', 'shares', 'volume');
+    const costIdx = col('avgcost', 'averagecost', 'cost', 'avgprice');
+    const priceIdx = col('latestprice', 'currentprice', 'price', 'lastprice', 'closingprice');
+
+    if (symIdx === -1 || qtyIdx === -1 || costIdx === -1)
+      throw new Error('Could not find Symbol / Qty / Avg Cost columns. Please check your CSV format.');
+
+    const rows = [];
+    for (let i = headerIdx + 1; i < lines.length; i++) {
+      const cells = lines[i].split(',').map(c => c.trim().replace(/['"]/g, ''));
+      const symbol = cells[symIdx]?.toUpperCase();
+      const qty    = parseFloat(cells[qtyIdx]);
+      const cost   = parseFloat(cells[costIdx]?.replace(/[^0-9.-]/g, ''));
+      const price  = priceIdx !== -1 ? parseFloat(cells[priceIdx]?.replace(/[^0-9.-]/g, '')) : null;
+      if (!symbol || isNaN(qty) || isNaN(cost) || qty <= 0) continue;
+      rows.push({ symbol, qty, avgCost: cost, currentPrice: price || cost, market: 'MYR' });
+    }
+    if (rows.length === 0) throw new Error('No valid rows found in CSV');
+    return rows;
   };
 
+  const handleFileChange = (e) => {
+    setCsvError('');
+    setCsvPreview(null);
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const rows = parseMoomooCSV(ev.target.result);
+        setCsvPreview(rows);
+      } catch (err) {
+        setCsvError(err.message);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  const confirmImport = async () => {
+    if (!csvPreview) return;
+    setImporting(true);
+    setCsvError('');
+    try {
+      await onReplacePortfolio(csvPreview);
+      setCsvPreview(null);
+    } catch (e) {
+      setCsvError('Import failed: ' + e.message);
+    }
+    setImporting(false);
+  };
+
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="space-y-4">
       <Panel>
         <div className="flex items-center justify-between mb-3">
           <h2 className="serif text-lg font-semibold">Portfolio Manager</h2>
           <div className="flex items-center gap-2">
+            {/* CSV import */}
+            <button
+              onClick={() => fileRef.current?.click()}
+              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded"
+              style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.textDim }}
+              title="Import from MOOMOO CSV export"
+            >
+              <Plus size={14} /> Import CSV
+            </button>
+            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleFileChange} />
+
+            {/* Live prices */}
             <button
               onClick={refreshPrices}
               disabled={refreshing || holdings.length === 0}
               className="flex items-center gap-1 text-sm px-3 py-1.5 rounded disabled:opacity-40"
               style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
-              title="Fetch live prices from backend"
             >
               {refreshing ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
               <span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Live Prices'}</span>
             </button>
-            <button onClick={() => setShowAdd(!showAdd)} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded" style={{ background: COLORS.green, color: '#000' }}><Plus size={14} /> Add</button>
+
+            {/* Add manually */}
+            <button onClick={() => setShowAdd(!showAdd)} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded" style={{ background: COLORS.green, color: '#000' }}>
+              <Plus size={14} /> Add
+            </button>
           </div>
         </div>
-        <p className="text-[11px] mb-3" style={{ color: COLORS.textDim }}>
-          💡 US stocks: ticker (VOO, SPY, AAPL). Bursa MY: 4-digit code + .KL — <span className="mono">1155.KL</span> Maybank · <span className="mono">5176.KL</span> Sunway REIT · <span className="mono">1295.KL</span> Public Bank · <span className="mono">1023.KL</span> CIMB
-        </p>
+
+        {/* CSV preview / confirm */}
+        {csvPreview && (
+          <div className="mb-4 p-3 rounded" style={{ background: 'rgba(59,130,246,0.08)', border: `1px solid ${COLORS.blue}` }}>
+            <p className="text-sm font-semibold mb-2" style={{ color: COLORS.blue }}>
+              Found {csvPreview.length} holding{csvPreview.length !== 1 ? 's' : ''} — this will replace your current portfolio.
+            </p>
+            <div className="text-xs mono space-y-0.5 mb-3 max-h-32 overflow-y-auto">
+              {csvPreview.map((r, i) => (
+                <div key={i} style={{ color: COLORS.textDim }}>
+                  {r.symbol} · qty {r.qty} · cost {r.avgCost}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={confirmImport} disabled={importing} className="px-3 py-1.5 rounded text-sm font-semibold disabled:opacity-50" style={{ background: COLORS.blue, color: '#fff' }}>
+                {importing ? <Loader2 size={12} className="animate-spin inline mr-1" /> : null}
+                Confirm Import
+              </button>
+              <button onClick={() => setCsvPreview(null)} className="px-3 py-1.5 rounded text-sm" style={{ background: COLORS.panelLight, color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        {csvError && <p className="text-xs mb-3" style={{ color: COLORS.red }}>{csvError}</p>}
+
+        {/* Cash */}
         <div className="mb-4">
           <label className="text-xs mono" style={{ color: COLORS.textDim }}>CASH (RM)</label>
-          <input type="number" value={cash} onChange={e => setCash(parseFloat(e.target.value) || 0)} className="block w-32 mt-1 px-2 py-1 rounded mono text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+          <input type="number" value={cash} onChange={e => onCashChange(e.target.value)} className="block w-32 mt-1 px-2 py-1 rounded mono text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
         </div>
+
+        {/* Add form */}
         {showAdd && (
           <div className="mb-4 p-3 rounded space-y-2" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
-            {/* Symbol search row */}
             <div className="relative">
               <div className="flex items-center gap-1 px-2 py-1.5 rounded mono text-sm" style={{ background: COLORS.bg, border: `1px solid ${showDropdown && symbolResults.length > 0 ? COLORS.green : COLORS.border}` }}>
                 {symbolSearching
@@ -835,10 +1039,8 @@ function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refres
               {showDropdown && symbolResults.length > 0 && (
                 <div className="absolute z-50 w-full mt-1 rounded overflow-hidden shadow-xl" style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}` }}>
                   {symbolResults.map((r, i) => (
-                    <button
-                      key={i}
-                      onMouseDown={e => { e.preventDefault(); selectSymbol(r); }}
-                      className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-opacity-80 text-sm"
+                    <button key={i} onMouseDown={e => { e.preventDefault(); selectSymbol(r); }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-left text-sm"
                       style={{ background: i % 2 === 0 ? COLORS.panelLight : COLORS.panel, borderBottom: `1px solid ${COLORS.border}` }}
                     >
                       <div>
@@ -851,17 +1053,24 @@ function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refres
                 </div>
               )}
             </div>
-            {/* Remaining fields */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
               <input placeholder="Qty" type="number" value={form.qty} onChange={e => setForm({ ...form, qty: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
               <input placeholder="Avg Cost" type="number" step="0.01" value={form.avgCost} onChange={e => setForm({ ...form, avgCost: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
-              <input placeholder="Current Price (auto-filled)" type="number" step="0.01" value={form.currentPrice} onChange={e => setForm({ ...form, currentPrice: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
-              <button onClick={add} disabled={!form.symbol || !form.qty || !form.avgCost} className="px-3 py-1.5 rounded text-sm font-semibold disabled:opacity-40" style={{ background: COLORS.green, color: '#000' }}>Save</button>
+              <input placeholder="Current Price" type="number" step="0.01" value={form.currentPrice} onChange={e => setForm({ ...form, currentPrice: e.target.value })} className="px-2 py-1.5 rounded text-sm mono" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+              <button onClick={handleAdd} disabled={!form.symbol || !form.qty || !form.avgCost || saving} className="px-3 py-1.5 rounded text-sm font-semibold disabled:opacity-40 flex items-center justify-center gap-1" style={{ background: COLORS.green, color: '#000' }}>
+                {saving ? <Loader2 size={12} className="animate-spin" /> : null} Save
+              </button>
             </div>
           </div>
         )}
-        {holdings.length === 0 ? (
-          <p className="text-sm py-8 text-center" style={{ color: COLORS.textDim }}>No holdings.</p>
+
+        {/* Holdings table */}
+        {loading ? (
+          <div className="flex items-center justify-center py-10 gap-2" style={{ color: COLORS.textDim }}>
+            <Loader2 size={18} className="animate-spin" /> Loading portfolio…
+          </div>
+        ) : holdings.length === 0 ? (
+          <p className="text-sm py-8 text-center" style={{ color: COLORS.textDim }}>No holdings. Add manually or import from MOOMOO CSV.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -871,19 +1080,29 @@ function Portfolio({ holdings, setHoldings, cash, setCash, refreshPrices, refres
                 </tr>
               </thead>
               <tbody>
-                {holdings.map((h, i) => {
-                  const mv = h.qty * h.currentPrice;
-                  const pl = (h.currentPrice - h.avgCost) * h.qty;
+                {holdings.map((h) => {
+                  const mv    = h.qty * h.currentPrice;
+                  const pl    = (h.currentPrice - h.avgCost) * h.qty;
                   const plPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
                   return (
-                    <tr key={i} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                    <tr key={h.id} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
                       <td className="py-3 font-semibold">{h.symbol}</td>
                       <td className="mono">{h.qty}</td>
                       <td className="mono">{h.avgCost.toFixed(2)}</td>
-                      <td><input type="number" step="0.01" value={h.currentPrice} onChange={e => updatePrice(i, e.target.value)} className="w-20 px-1 py-0.5 rounded mono text-sm" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} /></td>
+                      <td>
+                        <input
+                          type="number" step="0.01" value={h.currentPrice}
+                          onChange={e => onUpdatePrice(h.id, e.target.value)}
+                          onBlur={e => onUpdatePriceBlur(h.id, e.target.value)}
+                          className="w-20 px-1 py-0.5 rounded mono text-sm"
+                          style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+                        />
+                      </td>
                       <td className="mono">{mv.toFixed(2)}</td>
-                      <td className="mono" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>{pl >= 0 ? '+' : ''}{pl.toFixed(2)} <span className="text-[10px]">({plPct.toFixed(1)}%)</span></td>
-                      <td><button onClick={() => remove(i)} className="opacity-50"><Trash2 size={14} /></button></td>
+                      <td className="mono" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>
+                        {pl >= 0 ? '+' : ''}{pl.toFixed(2)} <span className="text-[10px]">({plPct.toFixed(1)}%)</span>
+                      </td>
+                      <td><button onClick={() => onRemoveHolding(h.id)} className="opacity-50 hover:opacity-100"><Trash2 size={14} /></button></td>
                     </tr>
                   );
                 })}
