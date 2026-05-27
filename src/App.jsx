@@ -446,8 +446,6 @@ function TradeDesk({ session, profile, onSignOut }) {
       </div>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} />}
-        {tab === 'analyzer' && <Analyzer capital={capital} />}
         {/* Triggered alert banners */}
         {triggeredAlerts.map((a, i) => (
           <div key={i} className="mb-3 px-4 py-3 rounded-lg flex items-center justify-between" style={{ background: 'rgba(245,158,11,0.15)', border: `1px solid ${COLORS.amber}` }}>
