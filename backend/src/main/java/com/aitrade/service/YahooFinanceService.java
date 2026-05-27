@@ -218,8 +218,26 @@ public class YahooFinanceService {
 
     // ── Quote fetch ────────────────────────────────────────────────────────────
 
-    @SuppressWarnings("unchecked")
+    /**
+     * Fetch quotes, with automatic single retry on 401.
+     * Yahoo Finance crumbs can expire before the 25-min TTL on Railway.
+     * On 401: clear stored crumb, re-run the full warmup+crumb flow, retry once.
+     */
     private Mono<List<Map<String, Object>>> doFetchQuotes(List<String> symbols, String crumb) {
+        return fetchQuotesWithCrumb(symbols, crumb)
+                .onErrorResume(e -> {
+                    if (e.getMessage() != null && e.getMessage().contains("401")) {
+                        log.warn("Yahoo Finance 401 — crumb expired, forcing refresh and retrying once");
+                        storedCrumb.set("");
+                        return refreshCrumb()
+                                .flatMap(newCrumb -> fetchQuotesWithCrumb(symbols, newCrumb));
+                    }
+                    return Mono.error(e);
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private Mono<List<Map<String, Object>>> fetchQuotesWithCrumb(List<String> symbols, String crumb) {
         String symbolParam = String.join(",", symbols);
         String cookie = storedCookie.get();
 
@@ -239,9 +257,6 @@ public class YahooFinanceService {
                 .map(body -> parseQuoteResponse((Map<String, Object>) body, symbols))
                 .onErrorResume(e -> {
                     log.error("Yahoo Finance quote failed: {}", e.getMessage());
-                    if (e.getMessage() != null && e.getMessage().contains("401")) {
-                        storedCrumb.set(""); // force refresh next call
-                    }
                     return Mono.error(e);
                 });
     }
