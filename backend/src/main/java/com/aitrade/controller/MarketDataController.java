@@ -42,6 +42,18 @@ public class MarketDataController {
     }
 
     /**
+     * OHLCV + dividend chart data.
+     * GET /api/market/chart/5176.KL?range=6M
+     * range: 1W | 1M | 3M | 6M (default) | 1Y | 5Y
+     */
+    @GetMapping("/chart/{symbol:.+}")
+    public Mono<Map<String, Object>> getChart(
+            @PathVariable String symbol,
+            @RequestParam(defaultValue = "6M") String range) {
+        return marketDataService.fetchChartData(symbol.toUpperCase(), range.toUpperCase());
+    }
+
+    /**
      * Batch quotes for portfolio refresh.
      * GET /api/market/quotes?symbols=SUNREIT.KL,VOO,MAYBANK.KL
      */

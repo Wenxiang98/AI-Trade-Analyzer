@@ -62,6 +62,16 @@ public class MarketDataService {
         return fetchFromTwelveData(normalized);
     }
 
+    /**
+     * Fetch OHLCV + dividend chart data.
+     * Yahoo Finance v8/chart works globally (US + Bursa), so we always route here.
+     */
+    public Mono<Map<String, Object>> fetchChartData(String symbol, String range) {
+        String normalized = normalize(symbol);
+        log.info("Chart request: {} → {}, range={}", symbol, normalized, range);
+        return yahooFinanceService.fetchChartData(normalized, range);
+    }
+
     public Mono<List<Map<String, Object>>> fetchQuotes(List<String> symbols) {
         List<String> normalized = symbols.stream().map(this::normalize).toList();
 

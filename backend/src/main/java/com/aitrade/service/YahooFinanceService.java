@@ -39,6 +39,7 @@ public class YahooFinanceService {
     private static final String YF_CRUMB   = "https://query1.finance.yahoo.com/v1/test/getcrumb";
     private static final String YF_QUOTE   = "https://query1.finance.yahoo.com/v7/finance/quote";
     private static final String YF_SEARCH  = "https://query1.finance.yahoo.com/v1/finance/search";
+    private static final String YF_CHART   = "https://query1.finance.yahoo.com/v8/finance/chart";
     private static final Duration CRUMB_TTL = Duration.ofMinutes(25);
 
     private static final String USER_AGENT =
@@ -130,6 +131,120 @@ public class YahooFinanceService {
     public Mono<Map<String, Object>> fetchQuote(String symbol) {
         return fetchQuotes(List.of(symbol))
                 .map(list -> list.isEmpty() ? errorMap(symbol, "No data") : list.get(0));
+    }
+
+    // ── Chart data ────────────────────────────────────────────────────────────
+
+    /**
+     * Fetch OHLCV + dividend history for the given symbol and time range.
+     * range: 1W | 1M | 3M | 6M | 1Y | 5Y
+     * Returns: { symbol, currency, candles:[{time,open,high,low,close,volume}], dividends:[{time,amount}] }
+     */
+    @SuppressWarnings("unchecked")
+    public Mono<Map<String, Object>> fetchChartData(String symbol, String range) {
+        return getCrumb().flatMap(crumb -> {
+            String[] p = rangeToParams(range);
+            String uri = YF_CHART + "/" + urlEncode(symbol)
+                    + "?interval=" + p[0]
+                    + "&range=" + p[1]
+                    + "&events=div%2Csplit"
+                    + "&crumb=" + urlEncode(crumb);
+            return httpClient.get()
+                    .uri(uri)
+                    .header(HttpHeaders.ACCEPT, "application/json,*/*")
+                    .header("Referer", "https://finance.yahoo.com/")
+                    .header("Cookie", storedCookie.get())
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .map(body -> parseChartResponse((Map<String, Object>) body, symbol))
+                    .onErrorResume(e -> {
+                        log.error("Chart fetch failed for {}: {}", symbol, e.getMessage());
+                        return Mono.just(Map.of("error", e.getMessage() != null ? e.getMessage() : "Fetch failed"));
+                    });
+        }).onErrorResume(e -> {
+            log.error("Chart crumb error for {}: {}", symbol, e.getMessage());
+            return Mono.just(Map.of("error", "Auth failed: " + e.getMessage()));
+        });
+    }
+
+    private String[] rangeToParams(String range) {
+        return switch (range == null ? "" : range.toUpperCase()) {
+            case "1W" -> new String[]{"1d",  "5d"};
+            case "1M" -> new String[]{"1d",  "1mo"};
+            case "3M" -> new String[]{"1d",  "3mo"};
+            case "1Y" -> new String[]{"1d",  "1y"};
+            case "5Y" -> new String[]{"1wk", "5y"};
+            default   -> new String[]{"1d",  "6mo"};  // 6M
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseChartResponse(Map<String, Object> body, String symbol) {
+        try {
+            Map<String, Object> chart = (Map<String, Object>) body.get("chart");
+            if (chart == null) return Map.of("error", "No chart object in response");
+            List<Map<String, Object>> results = (List<Map<String, Object>>) chart.get("result");
+            if (results == null || results.isEmpty()) return Map.of("error", "No data for " + symbol);
+
+            Map<String, Object> result = results.get(0);
+            Map<String, Object> meta   = (Map<String, Object>) result.get("meta");
+            String currency = meta != null ? (String) meta.getOrDefault("currency", "MYR") : "MYR";
+
+            List<Number> timestamps = (List<Number>) result.get("timestamp");
+            if (timestamps == null || timestamps.isEmpty()) return Map.of("error", "Empty timestamp array");
+
+            Map<String, Object> indic = (Map<String, Object>) result.get("indicators");
+            List<Map<String, Object>> quoteList = (List<Map<String, Object>>) indic.get("quote");
+            Map<String, Object> q = quoteList.get(0);
+
+            List<Number> opens   = (List<Number>) q.get("open");
+            List<Number> highs   = (List<Number>) q.get("high");
+            List<Number> lows    = (List<Number>) q.get("low");
+            List<Number> closes  = (List<Number>) q.get("close");
+            List<Number> volumes = (List<Number>) q.get("volume");
+
+            List<Map<String, Object>> candles = new ArrayList<>();
+            for (int i = 0; i < timestamps.size(); i++) {
+                if (closes == null || i >= closes.size() || closes.get(i) == null) continue;
+                Map<String, Object> candle = new HashMap<>();
+                candle.put("time",   timestamps.get(i).longValue());
+                candle.put("open",   round(toDouble(opens  != null && i < opens.size()   ? opens.get(i)   : null)));
+                candle.put("high",   round(toDouble(highs  != null && i < highs.size()   ? highs.get(i)   : null)));
+                candle.put("low",    round(toDouble(lows   != null && i < lows.size()    ? lows.get(i)    : null)));
+                candle.put("close",  round(toDouble(closes.get(i))));
+                candle.put("volume", volumes != null && i < volumes.size() && volumes.get(i) != null
+                        ? volumes.get(i).longValue() : 0L);
+                candles.add(candle);
+            }
+
+            // Parse dividends
+            List<Map<String, Object>> dividends = new ArrayList<>();
+            Map<String, Object> events = (Map<String, Object>) result.get("events");
+            if (events != null) {
+                Map<String, Object> divMap = (Map<String, Object>) events.get("dividends");
+                if (divMap != null) {
+                    for (Object val : divMap.values()) {
+                        Map<String, Object> div = (Map<String, Object>) val;
+                        Map<String, Object> d = new HashMap<>();
+                        d.put("time",   ((Number) div.get("date")).longValue());
+                        d.put("amount", round(toDouble(div.get("amount"))));
+                        dividends.add(d);
+                    }
+                    dividends.sort(Comparator.comparingLong(d -> (Long) d.get("time")));
+                }
+            }
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("symbol",    symbol);
+            response.put("currency",  currency);
+            response.put("candles",   candles);
+            response.put("dividends", dividends);
+            return response;
+
+        } catch (Exception e) {
+            log.error("Chart parse error for {}: {}", symbol, e.getMessage());
+            return Map.of("error", "Parse error: " + e.getMessage());
+        }
     }
 
     // ── Cookie / crumb lifecycle ───────────────────────────────────────────────
