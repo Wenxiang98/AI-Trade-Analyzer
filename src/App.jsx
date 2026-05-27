@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist } from './lib/supabase';
@@ -666,7 +667,7 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
         </div>
         {error && <p className="text-xs mb-2" style={{ color: COLORS.red }}>{error}</p>}
         {insight ? (
-          <p className="text-sm leading-relaxed">{insight}</p>
+          <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{insight}</ReactMarkdown></div>
         ) : (
           <p className="text-sm" style={{ color: COLORS.textDim }}>Click "Generate" for today's AI-powered market insight.</p>
         )}
@@ -958,7 +959,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
       {fallbackText && !analysis && (
         <Panel accent={COLORS.amber}>
           <div className="flex items-center gap-2 mb-3"><AlertTriangle size={14} style={{ color: COLORS.amber }} /><h3 className="serif text-base font-semibold">Analysis (Text Mode)</h3></div>
-          <div className="text-sm leading-relaxed whitespace-pre-wrap">{fallbackText}</div>
+          <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{fallbackText}</ReactMarkdown></div>
         </Panel>
       )}
 
@@ -1671,7 +1672,9 @@ Respond as analyst. Direct, specific, practical. No fluff. Under 200 words unles
       <div ref={scrollRef} className="h-[420px] overflow-y-auto scrollbar pr-2 space-y-3 mb-3">
         {messages.map((m, i) => (
           <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className="max-w-[85%] p-3 rounded-lg text-sm leading-relaxed whitespace-pre-wrap" style={{ background: m.role === 'user' ? COLORS.green : COLORS.panelLight, color: m.role === 'user' ? '#000' : COLORS.text, border: m.role === 'user' ? 'none' : `1px solid ${COLORS.border}` }}>{m.content}</div>
+            <div className="max-w-[85%] p-3 rounded-lg text-sm leading-relaxed" style={{ background: m.role === 'user' ? COLORS.green : COLORS.panelLight, color: m.role === 'user' ? '#000' : COLORS.text, border: m.role === 'user' ? 'none' : `1px solid ${COLORS.border}` }}>
+              {m.role === 'user' ? m.content : <div className="prose prose-invert prose-sm max-w-none"><ReactMarkdown>{m.content}</ReactMarkdown></div>}
+            </div>
           </div>
         ))}
         {loading && <div className="flex justify-start"><div className="p-3 rounded-lg" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}><Loader2 size={14} className="animate-spin" /></div></div>}
@@ -1770,7 +1773,7 @@ function Journal({ trades, onAddTrade, onRemoveTrade }) {
           <h3 className="serif text-base font-semibold flex items-center gap-2"><Zap size={14} style={{ color: COLORS.amber }} /> AI Pattern Analysis</h3>
           <button onClick={analyzePatterns} disabled={loadingPattern} className="flex items-center gap-1 text-xs px-3 py-1.5 rounded" style={{ color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}>{loadingPattern ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Analyze</button>
         </div>
-        {pattern ? <p className="text-sm leading-relaxed whitespace-pre-wrap">{pattern}</p> : <p className="text-sm" style={{ color: COLORS.textDim }}>Log at least 3 trades, then analyze.</p>}
+        {pattern ? <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{pattern}</ReactMarkdown></div> : <p className="text-sm" style={{ color: COLORS.textDim }}>Log at least 3 trades, then analyze.</p>}
       </Panel>
     </div>
   );
