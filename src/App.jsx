@@ -61,7 +61,13 @@ async function fetchLivePrices(symbols) {
     if (!res.ok) return {};
     const list = await res.json();
     const map = {};
-    list.forEach(p => { if (!p.error) map[p.symbol] = p; });
+    list.forEach(p => {
+      if (!p.error) {
+        map[p.symbol] = p;                           // e.g. "1155.KL"
+        if (p.symbol.endsWith('.KL'))
+          map[p.symbol.slice(0, -3)] = p;            // also "1155" — covers holdings stored without suffix
+      }
+    });
     return map;
   } catch {
     return {};
@@ -705,7 +711,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
             <Search size={32} className="mx-auto mb-3 opacity-30" />
             <p className="text-sm">Search any stock, ETF, or keyword</p>
             <div className="flex flex-wrap gap-2 justify-center mt-3">
-              {['VOO', 'SPY', 'AAPL', 'SUNREIT', 'tech etf', 'malaysia bank'].map(ex => (
+              {['VOO', 'SPY', 'AAPL', '5176.KL', 'tech etf', 'malaysia bank'].map(ex => (
                 <button key={ex} onClick={() => { setQuery(ex); setTimeout(() => search(), 50); }} className="text-[11px] px-2 py-1 rounded mono" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}>{ex}</button>
               ))}
             </div>
