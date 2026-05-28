@@ -760,6 +760,36 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
   );
 }
 
+// ── Indicator helpers (pure functions, no React) ─────────────────────────
+function calcMA(candles, period) {
+  const out = [];
+  for (let i = period - 1; i < candles.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += candles[j].close;
+    out.push({ time: candles[i].time, value: Math.round(sum / period * 100) / 100 });
+  }
+  return out;
+}
+
+function calcRSI(candles, period = 14) {
+  if (candles.length < period + 1) return [];
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = candles[i].close - candles[i - 1].close;
+    if (d > 0) avgGain += d; else avgLoss -= d;
+  }
+  avgGain /= period; avgLoss /= period;
+  const out = [];
+  for (let i = period; i < candles.length; i++) {
+    const d = candles[i].close - candles[i - 1].close;
+    avgGain = (avgGain * (period - 1) + Math.max(d, 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + Math.max(-d, 0)) / period;
+    const rsi = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+    out.push({ time: candles[i].time, value: Math.round(rsi * 10) / 10 });
+  }
+  return out;
+}
+
 // ===== STOCK CHART =====
 function StockChart({ symbol }) {
   const containerRef = useRef(null);
@@ -767,14 +797,21 @@ function StockChart({ symbol }) {
   const candleRef     = useRef(null);
   const lineRef       = useRef(null);
   const volRef        = useRef(null);
-  const markersRef    = useRef(null);
-  const pendingMkRef  = useRef([]);
+  const markersRef      = useRef(null);
+  const pendingMkRef    = useRef([]);
+  const ma20Ref         = useRef(null);
+  const ma50Ref         = useRef(null);
+  const rsiContainerRef = useRef(null);
+  const rsiChartRef     = useRef(null);
+  const rsiSeriesRef    = useRef(null);
+  const pendingRsiRef   = useRef([]);
 
-  const [range,     setRange]     = useState('6M');
-  const [chartType, setChartType] = useState('candle');
-  const [loading,   setLoading]   = useState(false);
-  const [error,     setError]     = useState('');
-  const [divList,   setDivList]   = useState([]);
+  const [range,      setRange]      = useState('6M');
+  const [chartType,  setChartType]  = useState('candle');
+  const [loading,    setLoading]    = useState(false);
+  const [error,      setError]      = useState('');
+  const [divList,    setDivList]    = useState([]);
+  const [indicators, setIndicators] = useState({ ma20: false, ma50: false, rsi: false });
 
   // ── Init chart once ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -800,6 +837,18 @@ function StockChart({ symbol }) {
         color: '#00c896', lineWidth: 2,
       });
       try { lSeries.applyOptions({ visible: false }); } catch (_) {}
+
+      // MA lines (hidden by default, toggled via indicator buttons)
+      const ma20s = chart.addSeries(LineSeries, {
+        color: '#f59e0b', lineWidth: 1, lastValueVisible: false, priceLineVisible: false,
+      });
+      try { ma20s.applyOptions({ visible: false }); } catch (_) {}
+      const ma50s = chart.addSeries(LineSeries, {
+        color: '#3b82f6', lineWidth: 1, lastValueVisible: false, priceLineVisible: false,
+      });
+      try { ma50s.applyOptions({ visible: false }); } catch (_) {}
+      ma20Ref.current = ma20s;
+      ma50Ref.current = ma50s;
 
       const vSeries = chart.addSeries(HistogramSeries, {
         priceFormat: { type: 'volume' },
@@ -831,6 +880,58 @@ function StockChart({ symbol }) {
     };
   }, []);
 
+  // ── RSI chart — created/destroyed when toggled ───────────────────────────
+  useEffect(() => {
+    if (!rsiContainerRef.current) return;
+    if (!indicators.rsi) {
+      if (rsiChartRef.current) {
+        try { rsiChartRef.current.remove(); } catch (_) {}
+        rsiChartRef.current = null;
+        rsiSeriesRef.current = null;
+      }
+      return;
+    }
+    if (rsiChartRef.current) return; // already initialised
+    try {
+      const rc = createChart(rsiContainerRef.current, {
+        layout:  { background: { color: '#141414' }, textColor: '#888' },
+        grid:    { vertLines: { color: '#1e1e1e' }, horzLines: { color: '#1e1e1e' } },
+        crosshair: { mode: 1 },
+        rightPriceScale: { borderColor: '#333', scaleMargins: { top: 0.1, bottom: 0.1 } },
+        timeScale: { borderColor: '#333', visible: false },
+        autoSize: true,
+      });
+      const rs = rc.addSeries(LineSeries, {
+        color: '#00c896', lineWidth: 1, lastValueVisible: true,
+        priceFormat: { precision: 1, minMove: 0.1 },
+      });
+      rs.createPriceLine({ price: 70, color: '#ef4444aa', lineWidth: 1, lineStyle: 2, title: 'OB' });
+      rs.createPriceLine({ price: 30, color: '#10b981aa', lineWidth: 1, lineStyle: 2, title: 'OS' });
+      rsiChartRef.current  = rc;
+      rsiSeriesRef.current = rs;
+
+      // Populate immediately if data already loaded
+      if (pendingRsiRef.current.length > 0) {
+        rs.setData(pendingRsiRef.current);
+        rc.timeScale().fitContent();
+      }
+
+      // Sync scroll/zoom with main chart
+      chartRef.current?.timeScale().subscribeVisibleLogicalRangeChange(r => {
+        if (r) rsiChartRef.current?.timeScale().setVisibleLogicalRange(r);
+      });
+      rc.timeScale().subscribeVisibleLogicalRangeChange(r => {
+        if (r) chartRef.current?.timeScale().setVisibleLogicalRange(r);
+      });
+
+      const ro = new ResizeObserver(() => {
+        if (rsiContainerRef.current) rc.applyOptions({ width: rsiContainerRef.current.offsetWidth });
+      });
+      ro.observe(rsiContainerRef.current);
+      return () => { ro.disconnect(); };
+    } catch (e) { console.error('[RSI] init failed:', e); }
+  }, [indicators.rsi]);
+
   // ── Fetch when symbol/range changes ──────────────────────────────────────
   useEffect(() => { if (symbol) loadChart(); }, [symbol, range]);
 
@@ -853,6 +954,20 @@ function StockChart({ symbol }) {
         color: c.close >= c.open ? '#26a69a44' : '#ef535044',
       })));
       chartRef.current?.timeScale().fitContent();
+
+      // Moving averages (always calculated; visibility controlled by toggle)
+      const ma20Data = calcMA(validCandles, 20);
+      const ma50Data = calcMA(validCandles, 50);
+      ma20Ref.current?.setData(ma20Data);
+      ma50Ref.current?.setData(ma50Data);
+
+      // RSI
+      const rsiData = calcRSI(validCandles);
+      pendingRsiRef.current = rsiData;
+      if (rsiSeriesRef.current) {
+        rsiSeriesRef.current.setData(rsiData);
+        rsiChartRef.current?.timeScale().fitContent();
+      }
 
       // Dividend markers
       const divs = data.dividends || [];
@@ -887,10 +1002,21 @@ function StockChart({ symbol }) {
     lineRef.current?.applyOptions({ visible: type === 'line' });
   };
 
+  const toggleIndicator = (name) => {
+    setIndicators(prev => {
+      const next = { ...prev, [name]: !prev[name] };
+      try {
+        if (name === 'ma20') ma20Ref.current?.applyOptions({ visible: next.ma20 });
+        if (name === 'ma50') ma50Ref.current?.applyOptions({ visible: next.ma50 });
+      } catch (_) {}
+      return next;
+    });
+  };
+
   return (
     <Panel>
-      {/* Controls */}
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+      {/* Controls row 1: type + range */}
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
         <div className="flex gap-1">
           {[['candle','🕯 Candle'],['line','📈 Line']].map(([t, label]) => (
             <button key={t} onClick={() => switchType(t)}
@@ -911,7 +1037,28 @@ function StockChart({ symbol }) {
         </div>
       </div>
 
-      {/* Chart container */}
+      {/* Controls row 2: indicator toggles */}
+      <div className="flex gap-1 mb-3 flex-wrap">
+        {[['ma20','MA20','#f59e0b'],['ma50','MA50','#3b82f6'],['rsi','RSI','#00c896']].map(([key, label, color]) => (
+          <button key={key} onClick={() => toggleIndicator(key)}
+            className="px-2 py-1 rounded text-xs font-mono"
+            style={{
+              background: indicators[key] ? color + '22' : COLORS.panelLight,
+              color:      indicators[key] ? color : COLORS.textDim,
+              border:    `1px solid ${indicators[key] ? color : COLORS.border}`,
+            }}>
+            {label}
+          </button>
+        ))}
+        {(indicators.ma20 || indicators.ma50) && (
+          <span className="text-[10px] self-center ml-1" style={{ color: COLORS.textDim }}>
+            {indicators.ma20 && <span style={{ color: '#f59e0b' }}>■ MA20 </span>}
+            {indicators.ma50 && <span style={{ color: '#3b82f6' }}>■ MA50</span>}
+          </span>
+        )}
+      </div>
+
+      {/* Main chart container */}
       <div style={{ position: 'relative', height: '320px' }}>
         {loading && (
           <div className="absolute inset-0 flex items-center justify-center rounded" style={{ background: '#14141499', zIndex: 10 }}>
@@ -919,6 +1066,19 @@ function StockChart({ symbol }) {
           </div>
         )}
         <div ref={containerRef} style={{ width: '100%', height: '320px' }} />
+      </div>
+
+      {/* RSI panel — shown only when RSI toggled on */}
+      <div style={{ display: indicators.rsi ? 'block' : 'none', marginTop: '2px' }}>
+        <div className="flex items-center justify-between mb-1 px-1">
+          <span className="text-[10px] mono font-semibold" style={{ color: '#00c896' }}>RSI (14)</span>
+          <span className="text-[10px] mono" style={{ color: COLORS.textDim }}>
+            <span style={{ color: '#ef4444' }}>— 70 overbought</span>
+            {' · '}
+            <span style={{ color: '#10b981' }}>— 30 oversold</span>
+          </span>
+        </div>
+        <div ref={rsiContainerRef} style={{ width: '100%', height: '90px' }} />
       </div>
 
       {error && <p className="text-xs mt-2 flex items-center gap-1" style={{ color: COLORS.red }}>⚠ {error}</p>}
@@ -1788,14 +1948,34 @@ function AlertsPanel({ alerts, onAddAlert, onRemoveAlert, lastRefreshed }) {
 
 // ===== SIZING =====
 function Sizing({ capital, setCapital, riskPct, setRiskPct }) {
-  const [entry, setEntry] = useState(''); const [stop, setStop] = useState(''); const [target, setTarget] = useState('');
-  const e = parseFloat(entry) || 0, s = parseFloat(stop) || 0, t = parseFloat(target) || 0;
-  const riskRM = capital * (riskPct / 100);
+  const [entry,      setEntry]      = useState('');
+  const [stop,       setStop]       = useState('');
+  const [target,     setTarget]     = useState('');
+  const [brokerage,  setBrokerage]  = useState('0.10');  // % per side
+  const [stampDuty,  setStampDuty]  = useState(true);   // Bursa Malaysia stamp duty toggle
+
+  const e  = parseFloat(entry)     || 0;
+  const s  = parseFloat(stop)      || 0;
+  const t  = parseFloat(target)    || 0;
+  const br = parseFloat(brokerage) || 0;
+
+  const riskRM       = capital * (riskPct / 100);
   const riskPerShare = e - s;
-  const maxShares = riskPerShare > 0 ? Math.floor(riskRM / riskPerShare) : 0;
+  const maxShares    = riskPerShare > 0 ? Math.floor(riskRM / riskPerShare) : 0;
   const positionCost = maxShares * e;
   const potentialProfit = t > 0 ? maxShares * (t - e) : 0;
   const rrr = riskPerShare > 0 && t > 0 ? ((t - e) / riskPerShare).toFixed(2) : '—';
+
+  // Transaction cost calculation
+  const brokerBuy  = positionCost * (br / 100);
+  const brokerSell = t > 0 ? (maxShares * t) * (br / 100) : positionCost * (br / 100);
+  const stampBuy   = stampDuty ? Math.min(positionCost * 0.0015, 1000) : 0;
+  const stampSell  = stampDuty ? Math.min((t > 0 ? maxShares * t : positionCost) * 0.0015, 1000) : 0;
+  const totalCosts = brokerBuy + brokerSell + stampBuy + stampSell;
+  const netProfit  = potentialProfit - totalCosts;
+
+  // Break-even: entry price + total round-trip cost per share
+  const breakEven  = maxShares > 0 ? e + totalCosts / maxShares : 0;
 
   return (
     <Panel>
@@ -1808,16 +1988,75 @@ function Sizing({ capital, setCapital, riskPct, setRiskPct }) {
           <Field label="Entry Price" value={entry} onChange={setEntry} placeholder="2.30" />
           <Field label="Stop Loss" value={stop} onChange={setStop} placeholder="2.20" />
           <Field label="Target Price (optional)" value={target} onChange={setTarget} placeholder="2.60" />
+          {/* Cost inputs */}
+          <div>
+            <label className="text-[11px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>Brokerage (% per side)</label>
+            <input type="number" step="0.01" min="0" value={brokerage} onChange={e => setBrokerage(e.target.value)}
+              placeholder="0.10"
+              className="block w-full mt-1 px-3 py-2 rounded mono text-sm outline-none"
+              style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+          </div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="stampDuty" checked={stampDuty} onChange={e => setStampDuty(e.target.checked)}
+              className="rounded" style={{ accentColor: COLORS.amber }} />
+            <label htmlFor="stampDuty" className="text-xs cursor-pointer" style={{ color: COLORS.textDim }}>
+              Bursa stamp duty (0.15%, max RM1,000 per trade)
+            </label>
+          </div>
         </div>
         <div className="space-y-3">
           <Result label="Max Risk (RM)" value={riskRM.toFixed(2)} color={COLORS.amber} />
           <Result label="Risk per Share" value={riskPerShare > 0 ? `RM ${riskPerShare.toFixed(2)}` : '—'} />
           <Result label="Max Shares" value={maxShares} highlight />
-          <Result label="Position Cost" value={`RM ${positionCost.toFixed(2)}`} />
-          <Result label="Potential Profit" value={potentialProfit > 0 ? `RM ${potentialProfit.toFixed(2)}` : '—'} color={COLORS.green} />
+          <Result label="Gross Position Cost" value={`RM ${positionCost.toFixed(2)}`} />
+          <Result label="Potential Gross Profit" value={potentialProfit > 0 ? `RM ${potentialProfit.toFixed(2)}` : '—'} color={COLORS.green} />
           <Result label="R:R Ratio" value={`1 : ${rrr}`} color={parseFloat(rrr) >= 2 ? COLORS.green : COLORS.amber} />
         </div>
       </div>
+
+      {/* Transaction cost breakdown */}
+      {maxShares > 0 && (
+        <div className="mt-4 p-3 rounded" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+          <p className="text-xs font-semibold mb-2 mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>Transaction Costs (round-trip)</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div>
+              <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>Brokerage (buy)</div>
+              <div className="mono text-sm font-semibold" style={{ color: COLORS.text }}>RM {brokerBuy.toFixed(2)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>Brokerage (sell)</div>
+              <div className="mono text-sm font-semibold" style={{ color: COLORS.text }}>RM {brokerSell.toFixed(2)}</div>
+            </div>
+            {stampDuty && (<>
+              <div>
+                <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>Stamp duty (buy)</div>
+                <div className="mono text-sm font-semibold" style={{ color: COLORS.amber }}>RM {stampBuy.toFixed(2)}</div>
+              </div>
+              <div>
+                <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>Stamp duty (sell)</div>
+                <div className="mono text-sm font-semibold" style={{ color: COLORS.amber }}>RM {stampSell.toFixed(2)}</div>
+              </div>
+            </>)}
+          </div>
+          <div className="mt-3 pt-3 grid grid-cols-3 gap-3" style={{ borderTop: `1px solid ${COLORS.border}` }}>
+            <div>
+              <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>Total Costs</div>
+              <div className="mono text-sm font-bold" style={{ color: COLORS.red }}>RM {totalCosts.toFixed(2)}</div>
+            </div>
+            <div>
+              <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>Net Profit (after costs)</div>
+              <div className="mono text-sm font-bold" style={{ color: netProfit >= 0 ? COLORS.green : COLORS.red }}>
+                {netProfit >= 0 ? '+' : ''}RM {netProfit.toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>Break-even Price</div>
+              <div className="mono text-sm font-bold" style={{ color: COLORS.blue }}>RM {breakEven.toFixed(3)}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {parseFloat(rrr) > 0 && parseFloat(rrr) < 2 && (
         <div className="mt-4 p-3 rounded text-xs" style={{ background: 'rgba(245, 158, 11, 0.1)', border: `1px solid ${COLORS.amber}`, color: COLORS.amber }}>
           ⚠ R:R below 1:2 — consider skipping. Pro traders require 1:2 minimum.
