@@ -463,6 +463,53 @@ public class YahooFinanceService {
         return map;
     }
 
+    // ── News ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Fetch latest news headlines for a symbol.
+     * Reuses the public YF_SEARCH endpoint with newsCount=N, quotesCount=0 — no crumb needed.
+     * Returns a list of { title, publisher, link, time } maps.
+     */
+    @SuppressWarnings("unchecked")
+    public Mono<List<Map<String, Object>>> fetchNews(String symbol, int count) {
+        String uri = YF_SEARCH + "?q=" + urlEncode(symbol)
+                + "&newsCount=" + count + "&quotesCount=0&listsCount=0";
+        log.info("Fetching news for {}: {}", symbol, uri);
+
+        return httpClient.get()
+                .uri(uri)
+                .header(HttpHeaders.ACCEPT, "application/json,*/*")
+                .header("Referer", "https://finance.yahoo.com/")
+                .retrieve()
+                .bodyToMono(Map.class)
+                .map(raw -> {
+                    try {
+                        List<Map<String, Object>> newsList =
+                                (List<Map<String, Object>>) raw.get("news");
+                        if (newsList == null) return List.<Map<String, Object>>of();
+                        return newsList.stream()
+                                .filter(n -> n.get("title") != null)
+                                .map(n -> {
+                                    Map<String, Object> item = new HashMap<>();
+                                    item.put("title",     n.getOrDefault("title", ""));
+                                    item.put("publisher", n.getOrDefault("publisher", ""));
+                                    item.put("link",      n.getOrDefault("link", ""));
+                                    item.put("time",      n.getOrDefault("providerPublishTime", 0));
+                                    return (Map<String, Object>) item;
+                                })
+                                .limit(count)
+                                .collect(Collectors.toList());
+                    } catch (Exception e) {
+                        log.error("News parse error for {}: {}", symbol, e.getMessage());
+                        return List.<Map<String, Object>>of();
+                    }
+                })
+                .onErrorResume(e -> {
+                    log.error("News fetch error for {}: {}", symbol, e.getMessage());
+                    return Mono.just(List.of());
+                });
+    }
+
     // ── Misc helpers ───────────────────────────────────────────────────────────
 
     private double toDouble(Object val) {

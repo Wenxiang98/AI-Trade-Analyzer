@@ -54,6 +54,17 @@ public class MarketDataController {
     }
 
     /**
+     * Latest news headlines for a stock.
+     * GET /api/market/news/AAPL
+     * GET /api/market/news/1155.KL
+     * Returns [{title, publisher, link, time}] — up to 5 items.
+     */
+    @GetMapping("/news/{symbol:.+}")
+    public Mono<List<Map<String, Object>>> getNews(@PathVariable String symbol) {
+        return marketDataService.fetchNews(symbol.toUpperCase());
+    }
+
+    /**
      * Batch quotes for portfolio refresh.
      * GET /api/market/quotes?symbols=SUNREIT.KL,VOO,MAYBANK.KL
      */

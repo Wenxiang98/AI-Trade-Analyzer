@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { createChart, CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts';
-import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye } from 'lucide-react';
+import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye, Newspaper } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
@@ -1103,6 +1103,80 @@ function StockChart({ symbol }) {
   );
 }
 
+// ===== NEWS PANEL =====
+function NewsPanel({ symbol }) {
+  const [news,    setNews]    = useState(null);   // null = loading
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!symbol) return;
+    setNews(null);
+    setLoading(true);
+    fetch(`${API_BASE}/api/market/news/${encodeURIComponent(symbol)}`)
+      .then(r => r.ok ? r.json() : [])
+      .then(data => setNews(Array.isArray(data) ? data : []))
+      .catch(() => setNews([]))
+      .finally(() => setLoading(false));
+  }, [symbol]);
+
+  function relTime(ts) {
+    if (!ts) return '';
+    const diff = Math.floor(Date.now() / 1000) - Number(ts);
+    if (diff < 3600)  return `${Math.max(1, Math.floor(diff / 60))}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return `${Math.floor(diff / 86400)}d ago`;
+  }
+
+  if (loading || news === null) {
+    return (
+      <Panel>
+        <div className="flex items-center gap-2 mb-3">
+          <Newspaper size={14} style={{ color: COLORS.textDim }} />
+          <h3 className="serif text-base font-semibold">Latest News</h3>
+        </div>
+        <div className="flex items-center gap-2 py-3 justify-center" style={{ color: COLORS.textDim }}>
+          <Loader2 size={13} className="animate-spin" />
+          <span className="text-xs">Loading headlines...</span>
+        </div>
+      </Panel>
+    );
+  }
+
+  if (!news.length) return null;
+
+  return (
+    <Panel>
+      <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2">
+        <Newspaper size={14} style={{ color: COLORS.textDim }} /> Latest News
+      </h3>
+      <div className="divide-y" style={{ borderColor: COLORS.border }}>
+        {news.map((item, i) => (
+          <a
+            key={i}
+            href={item.link}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block py-2.5 group"
+          >
+            <div className="text-sm leading-snug group-hover:underline" style={{ color: COLORS.text }}>
+              {item.title}
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-[11px] mono" style={{ color: COLORS.textDim }}>{item.publisher}</span>
+              {item.time > 0 && (
+                <>
+                  <span style={{ color: COLORS.border }}>·</span>
+                  <span className="text-[11px] mono" style={{ color: COLORS.textDim }}>{relTime(item.time)}</span>
+                </>
+              )}
+            </div>
+          </a>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 // ===== ANALYZER =====
 function Analyzer({ capital, preFill, onConsumePreFill }) {
   const [query, setQuery] = useState('');
@@ -1267,6 +1341,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
             <p className="mt-3 text-sm leading-relaxed">{analysis.summary}</p>
           </Panel>
           <StockChart symbol={analysis.ticker} />
+          <NewsPanel symbol={analysis.ticker} />
           <div className="grid md:grid-cols-2 gap-3">
             <Panel>
               <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2"><TrendingUp size={14} /> Technical</h3>
@@ -1304,6 +1379,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
       {fallbackText && !analysis && (
         <>
           <StockChart symbol={query.toUpperCase().trim()} />
+          <NewsPanel symbol={query.toUpperCase().trim()} />
           <Panel accent={COLORS.amber}>
             <div className="flex items-center gap-2 mb-3"><AlertTriangle size={14} style={{ color: COLORS.amber }} /><h3 className="serif text-base font-semibold">Analysis (Text Mode)</h3></div>
             <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{fallbackText}</ReactMarkdown></div>

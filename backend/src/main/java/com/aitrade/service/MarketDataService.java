@@ -72,6 +72,12 @@ public class MarketDataService {
         return yahooFinanceService.fetchChartData(normalized, range);
     }
 
+    public Mono<List<Map<String, Object>>> fetchNews(String symbol) {
+        String normalized = normalize(symbol);
+        log.info("News request: {} → {}", symbol, normalized);
+        return yahooFinanceService.fetchNews(normalized, 5);
+    }
+
     public Mono<List<Map<String, Object>>> fetchQuotes(List<String> symbols) {
         List<String> normalized = symbols.stream().map(this::normalize).toList();
 
