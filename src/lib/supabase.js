@@ -271,6 +271,44 @@ export async function removeFromWatchlist(itemId) {
   if (error) throw error;
 }
 
+// ── Daily Balance Log ──────────────────────────────────────────────────────
+
+export async function getDailyLog(userId, months = 6) {
+  const from = new Date();
+  from.setMonth(from.getMonth() - months);
+  const { data, error } = await supabase
+    .from('daily_balance_log')
+    .select('*')
+    .eq('user_id', userId)
+    .gte('date', from.toISOString().split('T')[0])
+    .order('date', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(r => ({
+    id:     r.id,
+    date:   r.date,
+    amount: Number(r.amount),
+    notes:  r.notes || '',
+  }));
+}
+
+export async function upsertDailyEntry(userId, entry) {
+  const { data, error } = await supabase
+    .from('daily_balance_log')
+    .upsert(
+      { user_id: userId, date: entry.date, amount: entry.amount, notes: entry.notes || '' },
+      { onConflict: 'user_id,date' }
+    )
+    .select()
+    .single();
+  if (error) throw error;
+  return { id: data.id, date: data.date, amount: Number(data.amount), notes: data.notes || '' };
+}
+
+export async function deleteDailyEntry(entryId) {
+  const { error } = await supabase.from('daily_balance_log').delete().eq('id', entryId);
+  if (error) throw error;
+}
+
 export async function getSnapshots(userId, limit = 30) {
   const { data, error } = await supabase
     .from('portfolio_snapshots')

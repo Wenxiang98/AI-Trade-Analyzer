@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { createChart, CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts';
-import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye, Newspaper, DollarSign, Activity, Printer, Filter, Tag } from 'lucide-react';
+import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye, Newspaper, DollarSign, Activity, Printer, Filter, Tag, CalendarDays } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist } from './lib/supabase';
+import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist, getDailyLog, upsertDailyEntry, deleteDailyEntry } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
 
 const COLORS = {
@@ -199,6 +199,7 @@ function TradeDesk({ session, profile, onSignOut }) {
   const [lastRefreshed,    setLastRefreshed]    = useState(null);
   const [autoRefreshMins,  setAutoRefreshMins]  = useState(() => storage.get('settings:autoRefresh', 5));
   const [usdMyr,           setUsdMyr]           = useState(4.40);   // live USD/MYR rate, fallback 4.40
+  const [dailyLog,         setDailyLog]         = useState([]);
   const cashSaveRef    = useRef(null);
   const refreshFnRef   = useRef(null);
 
@@ -220,13 +221,14 @@ function TradeDesk({ session, profile, onSignOut }) {
     (async () => {
       setPortfolioLoading(true);
       try {
-        const [rows, prof, journalRows, alertRows, snapshotRows, watchRows] = await Promise.all([
+        const [rows, prof, journalRows, alertRows, snapshotRows, watchRows, logRows] = await Promise.all([
           getPortfolio(userId),
           getProfile(userId),
           getJournalTrades(userId),
           getAlerts(userId),
           getSnapshots(userId, 30),
           getWatchlist(userId),
+          getDailyLog(userId),
         ]);
         setHoldings(rows);
         setCash(Number(prof?.cash ?? 0));
@@ -234,6 +236,7 @@ function TradeDesk({ session, profile, onSignOut }) {
         setAlerts(alertRows);
         setSnapshots(snapshotRows);
         setWatchlist(watchRows);
+        setDailyLog(logRows);
       } catch (e) { console.error('Failed to load data:', e); }
       setPortfolioLoading(false);
     })();
@@ -329,6 +332,24 @@ function TradeDesk({ session, profile, onSignOut }) {
     } catch (e) { console.error('Remove from watchlist failed:', e); }
   };
 
+  // ── Daily balance log mutations ───────────────────────────────────────────
+  const handleUpsertDailyEntry = async (entry) => {
+    try {
+      const saved = await upsertDailyEntry(userId, entry);
+      setDailyLog(prev => {
+        const rest = prev.filter(e => e.date !== saved.date);
+        return [...rest, saved].sort((a, b) => a.date.localeCompare(b.date));
+      });
+    } catch (e) { console.error('Daily log upsert failed:', e); }
+  };
+
+  const handleDeleteDailyEntry = async (entryId, date) => {
+    try {
+      await deleteDailyEntry(entryId);
+      setDailyLog(prev => prev.filter(e => e.id !== entryId));
+    } catch (e) { console.error('Daily log delete failed:', e); }
+  };
+
   const handleAnalyzeFromWatchlist = (symbol, name) => {
     setAnalyzerPreFill({ symbol, name: name || '' });
     setTab('analyzer');
@@ -396,6 +417,7 @@ function TradeDesk({ session, profile, onSignOut }) {
     { id: 'screener',   label: 'Screener',  icon: Filter },
     { id: 'sizing',     label: 'Sizing',    icon: Calculator },
     { id: 'options',    label: 'Options',   icon: Activity },
+    { id: 'dailylog',   label: 'Daily Log', icon: CalendarDays },
     { id: 'chat',       label: 'AI Chat',   icon: MessageSquare },
     { id: 'journal',    label: 'Journal',   icon: BookOpen },
   ];
@@ -508,6 +530,7 @@ function TradeDesk({ session, profile, onSignOut }) {
         {tab === 'screener'  && <Screener holdings={holdings} watchlist={watchlist} />}
         {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
         {tab === 'options' && <OptionsCalc />}
+        {tab === 'dailylog' && <DailyLog entries={dailyLog} onUpsert={handleUpsertDailyEntry} onDelete={handleDeleteDailyEntry} />}
         {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} userName={userName} />}
         {tab === 'journal' && <Journal trades={trades} onAddTrade={handleAddTrade} onRemoveTrade={handleRemoveTrade} />}
       </main>
@@ -2537,6 +2560,227 @@ function Journal({ trades, onAddTrade, onRemoveTrade }) {
         </div>
         {pattern ? <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{pattern}</ReactMarkdown></div> : <p className="text-sm" style={{ color: COLORS.textDim }}>Log at least 3 trades, then analyze.</p>}
       </Panel>
+    </div>
+  );
+}
+
+// ===== DAILY BALANCE LOG =====
+function DailyLog({ entries, onUpsert, onDelete }) {
+  const now   = new Date();
+  const today = now.toISOString().split('T')[0];
+  const [view,     setView]     = useState({ year: now.getFullYear(), month: now.getMonth() });
+  const [selected, setSelected] = useState(null);   // { date, existing }
+  const [form,     setForm]     = useState({ amount: '', notes: '' });
+  const [saving,   setSaving]   = useState(false);
+
+  // Date → entry lookup
+  const byDate = {};
+  entries.forEach(e => { byDate[e.date] = e; });
+
+  const { year, month } = view;
+  const firstDow    = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthLabel  = new Date(year, month, 1).toLocaleString('en-MY', { month: 'long', year: 'numeric' });
+
+  const goPrev = () => { const d = new Date(year, month - 1, 1); setView({ year: d.getFullYear(), month: d.getMonth() }); };
+  const goNext = () => { const d = new Date(year, month + 1, 1); setView({ year: d.getFullYear(), month: d.getMonth() }); };
+
+  const cells = [
+    ...Array(firstDow).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => {
+      const d   = i + 1;
+      const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      return { day: d, date: key, entry: byDate[key] || null };
+    }),
+  ];
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const openCell = (cell) => {
+    if (!cell || cell.date > today) return;
+    setSelected({ date: cell.date, existing: cell.entry });
+    setForm({ amount: cell.entry ? String(cell.entry.amount) : '', notes: cell.entry?.notes || '' });
+  };
+
+  const handleSave = async () => {
+    if (!form.amount || !selected) return;
+    setSaving(true);
+    await onUpsert({ date: selected.date, amount: parseFloat(form.amount), notes: form.notes });
+    setSelected(null);
+    setSaving(false);
+  };
+
+  const handleDelete = async () => {
+    if (!selected?.existing) return;
+    setSaving(true);
+    await onDelete(selected.existing.id, selected.date);
+    setSelected(null);
+    setSaving(false);
+  };
+
+  // Monthly stats
+  const prefix   = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const monthEnt = entries.filter(e => e.date.startsWith(prefix));
+  const monthTot = monthEnt.reduce((s, e) => s + e.amount, 0);
+  const upDays   = monthEnt.filter(e => e.amount > 0).length;
+  const dnDays   = monthEnt.filter(e => e.amount < 0).length;
+  const allTot   = entries.reduce((s, e) => s + e.amount, 0);
+
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  return (
+    <div className="space-y-4">
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="All-Time Net" value={`${allTot >= 0 ? '+' : ''}RM ${allTot.toFixed(2)}`} sub="Since first entry" color={allTot >= 0 ? COLORS.green : COLORS.red} />
+        <StatCard label="This Month" value={`${monthTot >= 0 ? '+' : ''}RM ${monthTot.toFixed(2)}`} sub={monthLabel} color={monthTot >= 0 ? COLORS.green : COLORS.red} />
+        <StatCard label="Up Days" value={upDays} sub="This month" color={COLORS.green} />
+        <StatCard label="Down Days" value={dnDays} sub="This month" color={COLORS.red} />
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-3">
+        {/* Calendar */}
+        <div className="md:col-span-2">
+          <Panel>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="serif text-base font-semibold flex items-center gap-2">
+                <CalendarDays size={14} style={{ color: COLORS.blue }} /> Daily Balance Log
+              </h3>
+              <div className="flex items-center gap-2">
+                <button onClick={goPrev} className="px-2 py-1 rounded text-xs" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>‹</button>
+                <span className="mono text-sm min-w-[126px] text-center">{monthLabel}</span>
+                <button onClick={goNext} className="px-2 py-1 rounded text-xs" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>›</button>
+              </div>
+            </div>
+
+            {/* Day-of-week headers */}
+            <div className="grid grid-cols-7 gap-1 mb-1">
+              {DOW.map(d => <div key={d} className="text-center text-[10px] mono py-1" style={{ color: COLORS.textDim }}>{d}</div>)}
+            </div>
+
+            {/* Calendar grid */}
+            <div className="grid grid-cols-7 gap-1">
+              {cells.map((cell, i) => {
+                if (!cell) return <div key={i} style={{ minHeight: 54 }} />;
+                const isFuture  = cell.date > today;
+                const isToday   = cell.date === today;
+                const isSel     = selected?.date === cell.date;
+                const has       = !!cell.entry;
+                const amt       = cell.entry?.amount ?? 0;
+                const bg = isSel    ? `${COLORS.blue}33`
+                  : !has           ? COLORS.panelLight
+                  : amt > 0        ? 'rgba(16,185,129,0.18)'
+                  : amt < 0        ? 'rgba(239,68,68,0.18)'
+                  : COLORS.panelLight;
+                const tc = !has    ? (isToday ? COLORS.amber : COLORS.textDim)
+                  : amt >= 0       ? COLORS.green : COLORS.red;
+                return (
+                  <button key={i} onClick={() => openCell(cell)} disabled={isFuture}
+                    className="rounded p-1 flex flex-col items-center justify-start transition-all"
+                    style={{ background: bg, minHeight: 54, opacity: isFuture ? 0.25 : 1, cursor: isFuture ? 'default' : 'pointer',
+                      border: `1px solid ${isSel ? COLORS.blue : isToday ? COLORS.amber : 'transparent'}` }}>
+                    <span className="text-[11px] mono font-semibold" style={{ color: isToday ? COLORS.amber : tc }}>{cell.day}</span>
+                    {has && (
+                      <span className="text-[9px] mono leading-tight mt-0.5 font-bold" style={{ color: tc }}>
+                        {amt >= 0 ? '+' : ''}{amt.toFixed(0)}
+                      </span>
+                    )}
+                    {isToday && !has && <span className="text-[8px] mono mt-0.5" style={{ color: COLORS.amber }}>+ log</span>}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center gap-4 mt-3">
+              {[['rgba(16,185,129,0.3)', 'Up day'], ['rgba(239,68,68,0.3)', 'Down day']].map(([bg, lbl]) => (
+                <div key={lbl} className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textDim }}>
+                  <div className="w-3 h-3 rounded" style={{ background: bg }} />{lbl}
+                </div>
+              ))}
+              <span className="text-[10px]" style={{ color: COLORS.textDim }}>Click any past day to log</span>
+            </div>
+          </Panel>
+        </div>
+
+        {/* Entry panel */}
+        <Panel>
+          {selected ? (
+            <div className="space-y-3">
+              <div>
+                <h3 className="serif text-base font-semibold">{selected.existing ? 'Edit Entry' : 'Log Entry'}</h3>
+                <p className="mono text-xs mt-0.5" style={{ color: COLORS.textDim }}>{selected.date}</p>
+              </div>
+
+              <div>
+                <label className="text-[11px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>Daily P&amp;L (RM)</label>
+                <input
+                  type="number" step="0.01" autoFocus
+                  value={form.amount}
+                  onChange={e => setForm(p => ({ ...p, amount: e.target.value }))}
+                  onKeyDown={e => e.key === 'Enter' && handleSave()}
+                  placeholder="+250 or -80"
+                  className="block w-full mt-1 px-3 py-2 rounded mono text-2xl font-bold outline-none"
+                  style={{
+                    background: COLORS.panelLight,
+                    border: `2px solid ${form.amount ? (parseFloat(form.amount) >= 0 ? COLORS.green : COLORS.red) : COLORS.border}`,
+                    color: form.amount ? (parseFloat(form.amount) >= 0 ? COLORS.green : COLORS.red) : COLORS.text,
+                  }}
+                />
+              </div>
+
+              <div>
+                <label className="text-[11px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>Notes (optional)</label>
+                <textarea
+                  value={form.notes}
+                  onChange={e => setForm(p => ({ ...p, notes: e.target.value }))}
+                  placeholder="Dividend received, sold VOO, market dipped..."
+                  rows={3}
+                  className="block w-full mt-1 px-3 py-2 rounded text-sm outline-none resize-none"
+                  style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+                />
+              </div>
+
+              <div className="flex gap-2">
+                <button onClick={handleSave} disabled={!form.amount || saving}
+                  className="flex-1 py-2 rounded font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-1"
+                  style={{ background: COLORS.green, color: '#000' }}>
+                  {saving && <Loader2 size={12} className="animate-spin" />}
+                  {selected.existing ? 'Update' : 'Save'}
+                </button>
+                {selected.existing && (
+                  <button onClick={handleDelete} disabled={saving} className="px-3 py-2 rounded" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.red}`, color: COLORS.red }}><Trash2 size={14} /></button>
+                )}
+                <button onClick={() => setSelected(null)} className="px-3 py-2 rounded" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.textDim }}><X size={14} /></button>
+              </div>
+            </div>
+          ) : (
+            <div className="py-8 text-center" style={{ color: COLORS.textDim }}>
+              <CalendarDays size={32} className="mx-auto mb-3 opacity-20" />
+              <p className="text-sm">Click any past day on the calendar to log your daily P&amp;L</p>
+              <p className="text-xs mt-2">Today is highlighted in <span style={{ color: COLORS.amber }}>amber</span></p>
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      {/* Recent entries list */}
+      {entries.length > 0 && (
+        <Panel>
+          <h3 className="serif text-base font-semibold mb-3">Recent Entries</h3>
+          <div className="space-y-0">
+            {[...entries].reverse().slice(0, 15).map(e => (
+              <div key={e.id} className="flex items-center justify-between py-2.5 border-b last:border-0" style={{ borderColor: COLORS.border }}>
+                <div className="flex-1">
+                  <span className="mono text-xs font-semibold" style={{ color: COLORS.textDim }}>{e.date}</span>
+                  {e.notes && <span className="ml-3 text-xs" style={{ color: COLORS.textDim }}>{e.notes}</span>}
+                </div>
+                <span className="mono text-sm font-bold" style={{ color: e.amount >= 0 ? COLORS.green : COLORS.red }}>
+                  {e.amount >= 0 ? '+' : ''}RM {Math.abs(e.amount).toFixed(2)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
     </div>
   );
 }
