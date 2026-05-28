@@ -936,7 +936,14 @@ function StockChart({ symbol }) {
         grid:    { vertLines: { color: '#1e1e1e' }, horzLines: { color: '#1e1e1e' } },
         crosshair: { mode: 1 },
         rightPriceScale: { borderColor: '#333' },
-        timeScale: { borderColor: '#333', timeVisible: true, secondsVisible: false },
+        timeScale: {
+          borderColor: '#333',
+          timeVisible: true,
+          secondsVisible: false,
+          fixLeftEdge: true,          // prevent scrolling into empty space left of first candle
+          fixRightEdge: false,        // allow a small right margin (live price update friendly)
+          lockVisibleTimeRangeOnResize: true, // keep the same bars visible on resize
+        },
         autoSize: true,   // v5: let the container CSS control sizing
       });
 
