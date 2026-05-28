@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { createChart, CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts';
-import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye, Newspaper } from 'lucide-react';
+import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye, Newspaper, DollarSign, Activity, Printer } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
@@ -390,9 +390,11 @@ function TradeDesk({ session, profile, onSignOut }) {
   const tabs = [
     { id: 'dashboard',  label: 'Dashboard', icon: LayoutDashboard },
     { id: 'watchlist',  label: 'Watchlist', icon: Eye },
-    { id: 'analyzer',  label: 'Analyzer',  icon: Search },
+    { id: 'analyzer',   label: 'Analyzer',  icon: Search },
     { id: 'portfolio',  label: 'Portfolio', icon: Wallet },
+    { id: 'dividends',  label: 'Dividends', icon: DollarSign },
     { id: 'sizing',     label: 'Sizing',    icon: Calculator },
+    { id: 'options',    label: 'Options',   icon: Activity },
     { id: 'chat',       label: 'AI Chat',   icon: MessageSquare },
     { id: 'journal',    label: 'Journal',   icon: BookOpen },
   ];
@@ -501,7 +503,9 @@ function TradeDesk({ session, profile, onSignOut }) {
             lastRefreshed={lastRefreshed}
           />
         )}
+        {tab === 'dividends' && <DividendTracker holdings={holdings} watchlist={watchlist} usdMyr={usdMyr} />}
         {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
+        {tab === 'options' && <OptionsCalc />}
         {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} userName={userName} />}
         {tab === 'journal' && <Journal trades={trades} onAddTrade={handleAddTrade} onRemoveTrade={handleRemoveTrade} />}
       </main>
@@ -1865,6 +1869,17 @@ function Portfolio({ holdings, onAddHolding, onRemoveHolding, onUpdatePrice, onU
         <div className="flex items-center justify-between mb-3">
           <h2 className="serif text-lg font-semibold">Portfolio Manager</h2>
           <div className="flex items-center gap-2">
+            {/* Print / export */}
+            <button
+              onClick={() => window.print()}
+              className="flex items-center gap-1 text-sm px-3 py-1.5 rounded"
+              style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.textDim }}
+              title="Print / save as PDF"
+            >
+              <Printer size={14} />
+              <span className="hidden sm:inline">Print</span>
+            </button>
+
             {/* CSV import */}
             <button
               onClick={() => fileRef.current?.click()}
@@ -2451,6 +2466,260 @@ function Journal({ trades, onAddTrade, onRemoveTrade }) {
           <button onClick={analyzePatterns} disabled={loadingPattern} className="flex items-center gap-1 text-xs px-3 py-1.5 rounded" style={{ color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}>{loadingPattern ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Analyze</button>
         </div>
         {pattern ? <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{pattern}</ReactMarkdown></div> : <p className="text-sm" style={{ color: COLORS.textDim }}>Log at least 3 trades, then analyze.</p>}
+      </Panel>
+    </div>
+  );
+}
+
+// ===== DIVIDEND TRACKER =====
+function DividendTracker({ holdings, watchlist, usdMyr = 4.40 }) {
+  const [data,    setData]    = useState({});
+  const [loading, setLoading] = useState(false);
+  const [loaded,  setLoaded]  = useState(false);
+
+  const isUS  = (sym) => !sym?.toUpperCase().endsWith('.KL');
+  const symbols = [...new Set([...holdings.map(h => h.symbol), ...watchlist.map(w => w.symbol)])];
+
+  const load = async () => {
+    if (!symbols.length) return;
+    setLoading(true);
+    const results = await Promise.all(
+      symbols.map(sym =>
+        fetch(`${API_BASE}/api/market/dividend/${encodeURIComponent(sym)}`)
+          .then(r => r.ok ? r.json() : { symbol: sym, error: 'Failed' })
+          .catch(() => ({ symbol: sym, error: 'Failed' }))
+      )
+    );
+    const map = {};
+    results.forEach(r => { if (r.symbol) map[r.symbol] = r; });
+    setData(map);
+    setLoading(false);
+    setLoaded(true);
+  };
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const holdingQty = (sym) => holdings.find(h => h.symbol === sym)?.qty || 0;
+
+  const fmtDate = (ts) => {
+    if (!ts) return '—';
+    return new Date(Number(ts) * 1000).toLocaleDateString('en-MY', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
+  const isFuture = (ts) => ts && Number(ts) * 1000 > Date.now();
+
+  // Sort by ex-div date ascending, nulls last
+  const sorted = symbols.filter(s => data[s] && !data[s].error).sort((a, b) => {
+    const da = data[a]?.exDivDate || 0, db = data[b]?.exDivDate || 0;
+    if (da && db) return Number(da) - Number(db);
+    return da ? -1 : db ? 1 : a.localeCompare(b);
+  });
+
+  const totalIncome = holdings.reduce((sum, h) => {
+    const d = data[h.symbol];
+    if (!d || !(d.divRate > 0)) return sum;
+    return sum + d.divRate * h.qty * (isUS(h.symbol) ? usdMyr : 1);
+  }, 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard label="Tracked" value={symbols.length} sub="symbols" />
+        <StatCard label="Est. Annual Income" value={loaded ? `RM ${totalIncome.toFixed(2)}` : '—'} sub="From holdings" color={totalIncome > 0 ? COLORS.green : COLORS.textDim} />
+        <StatCard label="Paying Dividends" value={loaded ? sorted.filter(s => (data[s]?.divRate || 0) > 0).length : '—'} sub={`of ${symbols.length}`} color={COLORS.amber} />
+      </div>
+
+      <Panel>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="serif text-lg font-semibold flex items-center gap-2">
+            <DollarSign size={16} style={{ color: COLORS.green }} /> Dividend Tracker
+          </h2>
+          <button onClick={load} disabled={loading} className="flex items-center gap-1 text-xs px-3 py-1.5 rounded" style={{ color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}>
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Refresh
+          </button>
+        </div>
+
+        {loading && !loaded && (
+          <div className="flex items-center gap-2 py-8 justify-center" style={{ color: COLORS.textDim }}>
+            <Loader2 size={16} className="animate-spin" />
+            <span className="text-sm">Fetching dividend data...</span>
+          </div>
+        )}
+
+        {loaded && symbols.length === 0 && (
+          <p className="text-sm py-8 text-center" style={{ color: COLORS.textDim }}>
+            Add holdings or watchlist items first.
+          </p>
+        )}
+
+        {loaded && symbols.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                  {['Symbol', 'Price', 'Div / Share', 'Yield', 'Ex-Date', 'Est. Annual Income'].map(h => (
+                    <th key={h} className="text-left pb-2 pr-4 text-[10px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sorted.map(sym => {
+                  const d   = data[sym] || {};
+                  const qty = holdingQty(sym);
+                  const fx  = isUS(sym) ? usdMyr : 1;
+                  const income = d.divRate > 0 && qty > 0 ? d.divRate * qty * fx : null;
+                  const upcoming = isFuture(d.exDivDate);
+                  const cur = isUS(sym) ? '$' : 'RM';
+                  return (
+                    <tr key={sym} className="border-b" style={{ borderColor: COLORS.border }}>
+                      <td className="py-3 pr-4">
+                        <div className="font-bold mono">{sym}</div>
+                        <div className="text-[10px]" style={{ color: COLORS.textDim }}>{qty > 0 ? `${qty} units` : 'watchlist'}</div>
+                      </td>
+                      <td className="py-3 pr-4 mono">{d.price > 0 ? `${cur}${d.price}` : '—'}</td>
+                      <td className="py-3 pr-4 mono">{d.divRate > 0 ? `${cur}${d.divRate.toFixed(4)}` : <span style={{ color: COLORS.textDim }}>—</span>}</td>
+                      <td className="py-3 pr-4 mono" style={{ color: d.divYield > 0 ? COLORS.green : COLORS.textDim }}>
+                        {d.divYield > 0 ? `${d.divYield.toFixed(2)}%` : '—'}
+                      </td>
+                      <td className="py-3 pr-4 mono text-xs" style={{ color: upcoming ? COLORS.amber : COLORS.textDim }}>
+                        {fmtDate(d.exDivDate)}{upcoming && <span className="ml-1" style={{ color: COLORS.amber }}>●</span>}
+                      </td>
+                      <td className="py-3 mono font-semibold" style={{ color: income ? COLORS.green : COLORS.textDim }}>
+                        {income ? `RM ${income.toFixed(2)}` : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="text-[10px] mt-3" style={{ color: COLORS.textDim }}>
+              Dividend data is trailing 12-month. Upcoming ex-dates marked ●. US dividends converted at {usdMyr} USD/MYR.
+            </p>
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+// ===== OPTIONS CALCULATOR (Black-Scholes) =====
+function _normalCDF(x) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp(-x * x / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.7814779 + t * (-1.8212560 + t * 1.3302744))));
+  return x >= 0 ? 1 - p : p;
+}
+function _normalPDF(x) { return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI); }
+
+function _bsPrice(S, K, T, r, sigma) {
+  if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) return null;
+  const sq = Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r + sigma * sigma / 2) * T) / (sigma * sq);
+  const d2 = d1 - sigma * sq;
+  const Nd1 = _normalCDF(d1), Nd2 = _normalCDF(d2), nd1 = _normalPDF(d1);
+  const Ke  = K * Math.exp(-r * T);
+  const call = Math.max(0, S * Nd1 - Ke * Nd2);
+  const put  = Math.max(0, Ke * _normalCDF(-d2) - S * _normalCDF(-d1));
+  return {
+    call, put,
+    deltaCall:  Nd1,
+    deltaPut:   Nd1 - 1,
+    gamma:      nd1 / (S * sigma * sq),
+    vega:       S * nd1 * sq / 100,                                          // per 1% vol
+    thetaCall: (-(S * nd1 * sigma) / (2 * sq) - r * Ke * Nd2)          / 365,
+    thetaPut:  (-(S * nd1 * sigma) / (2 * sq) + r * Ke * _normalCDF(-d2)) / 365,
+    d1, d2,
+  };
+}
+
+function OptionsCalc() {
+  const [f, setF] = useState({ S: '', K: '', days: '', r: '4.5', iv: '', type: 'call' });
+  const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+
+  const S = parseFloat(f.S) || 0, K = parseFloat(f.K) || 0;
+  const T = (parseFloat(f.days) || 0) / 365;
+  const r = (parseFloat(f.r) || 0) / 100, sigma = (parseFloat(f.iv) || 0) / 100;
+  const bs = S && K && T && sigma ? _bsPrice(S, K, T, r, sigma) : null;
+
+  const isCall = f.type === 'call';
+  const price  = bs ? (isCall ? bs.call : bs.put) : null;
+  const delta  = bs ? (isCall ? bs.deltaCall : bs.deltaPut) : null;
+  const intrinsic = bs ? Math.max(0, isCall ? S - K : K - S) : 0;
+  const itm = bs ? (isCall ? S > K : S < K) : null;
+  const callColor = COLORS.green, putColor = COLORS.red;
+  const typeColor = isCall ? callColor : putColor;
+
+  return (
+    <div className="space-y-4">
+      <Panel>
+        <h2 className="serif text-lg font-semibold mb-4 flex items-center gap-2">
+          <Activity size={16} style={{ color: COLORS.blue }} /> Options Calculator
+          <span className="text-xs mono font-normal px-2 py-0.5 rounded" style={{ background: COLORS.panelLight, color: COLORS.textDim }}>Black-Scholes</span>
+        </h2>
+
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mb-4">
+          <Field label="Stock Price (S)" value={f.S} onChange={v => set('S', v)} placeholder="e.g. 210.00" />
+          <Field label="Strike Price (K)" value={f.K} onChange={v => set('K', v)} placeholder="e.g. 215.00" />
+          <Field label="Days to Expiry" value={f.days} onChange={v => set('days', v)} placeholder="e.g. 30" step="1" />
+          <Field label="Risk-Free Rate %" value={f.r} onChange={v => set('r', v)} placeholder="e.g. 4.5" />
+          <Field label="Implied Volatility %" value={f.iv} onChange={v => set('iv', v)} placeholder="e.g. 25" />
+          <div>
+            <label className="text-[11px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>Option Type</label>
+            <div className="flex gap-2 mt-1">
+              {['call', 'put'].map(t => (
+                <button key={t} onClick={() => set('type', t)} className="flex-1 py-2 rounded text-sm font-semibold" style={{ background: f.type === t ? (t === 'call' ? callColor : putColor) : COLORS.panelLight, color: f.type === t ? '#000' : COLORS.textDim, border: `1px solid ${f.type === t ? (t === 'call' ? callColor : putColor) : COLORS.border}` }}>
+                  {t.toUpperCase()}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {bs ? (
+          <>
+            {/* Premium */}
+            <div className="flex items-center justify-between p-4 rounded-lg mb-4" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+              <div>
+                <div className="text-[10px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>{f.type.toUpperCase()} Premium (theoretical)</div>
+                <div className="mono text-4xl font-bold mt-1" style={{ color: typeColor }}>{price.toFixed(4)}</div>
+                <div className="text-xs mono mt-1" style={{ color: COLORS.textDim }}>Intrinsic: {intrinsic.toFixed(4)} · Time value: {(price - intrinsic).toFixed(4)}</div>
+              </div>
+              <div className="text-right">
+                <div className="mono text-sm px-3 py-1.5 rounded font-bold" style={{ background: itm ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.1)', color: itm ? COLORS.green : COLORS.red, border: `1px solid ${itm ? COLORS.green : COLORS.red}` }}>
+                  {itm ? 'ITM' : 'OTM'}
+                </div>
+                <div className="text-[10px] mono mt-2" style={{ color: COLORS.textDim }}>Both premiums: Call {bs.call.toFixed(4)} · Put {bs.put.toFixed(4)}</div>
+              </div>
+            </div>
+
+            {/* Greeks */}
+            <h3 className="mono text-xs uppercase tracking-wider mb-3" style={{ color: COLORS.textDim }}>The Greeks</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: 'Delta (Δ)', value: delta?.toFixed(4), note: 'price Δ per $1 move', color: COLORS.blue },
+                { label: 'Gamma (Γ)', value: bs.gamma.toFixed(6), note: 'delta Δ per $1 move', color: COLORS.amber },
+                { label: 'Theta (Θ)', value: (isCall ? bs.thetaCall : bs.thetaPut).toFixed(4), note: 'time decay / day', color: COLORS.red },
+                { label: 'Vega (ν)', value: bs.vega.toFixed(4), note: 'price Δ per 1% vol', color: COLORS.blue },
+              ].map(g => (
+                <div key={g.label} className="p-3 rounded" style={{ background: COLORS.panelLight }}>
+                  <div className="text-[10px] mono uppercase tracking-wider" style={{ color: COLORS.textDim }}>{g.label}</div>
+                  <div className="mono text-xl font-bold mt-1" style={{ color: g.color }}>{g.value}</div>
+                  <div className="text-[9px] mono mt-1" style={{ color: COLORS.textDim }}>{g.note}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 p-2 rounded mono text-[10px] flex gap-4 flex-wrap" style={{ background: COLORS.panelLight, color: COLORS.textDim }}>
+              <span>d1: {bs.d1.toFixed(4)}</span>
+              <span>d2: {bs.d2.toFixed(4)}</span>
+              <span>T: {T.toFixed(6)} yrs</span>
+              <span>σ: {(sigma * 100).toFixed(1)}%</span>
+            </div>
+          </>
+        ) : (
+          <div className="py-10 text-center" style={{ color: COLORS.textDim }}>
+            <Activity size={36} className="mx-auto mb-3 opacity-25" />
+            <p className="text-sm">Enter stock price, strike, expiry days, and IV to price the option</p>
+          </div>
+        )}
       </Panel>
     </div>
   );

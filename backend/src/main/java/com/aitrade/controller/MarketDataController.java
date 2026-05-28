@@ -54,6 +54,16 @@ public class MarketDataController {
     }
 
     /**
+     * Dividend info for a stock: divRate, divYield, exDivDate, divDate.
+     * GET /api/market/dividend/AAPL
+     * GET /api/market/dividend/5176.KL
+     */
+    @GetMapping("/dividend/{symbol:.+}")
+    public Mono<Map<String, Object>> getDividendInfo(@PathVariable String symbol) {
+        return marketDataService.fetchDividendInfo(symbol.toUpperCase());
+    }
+
+    /**
      * Latest news headlines for a stock.
      * GET /api/market/news/AAPL
      * GET /api/market/news/1155.KL

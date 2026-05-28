@@ -463,6 +463,72 @@ public class YahooFinanceService {
         return map;
     }
 
+    // ── Dividend info ─────────────────────────────────────────────────────────
+
+    /**
+     * Fetch dividend data for a symbol using Yahoo Finance v7/finance/quote.
+     * Returns { symbol, name, price, currency, divRate, divYield, exDivDate, divDate }.
+     * exDivDate / divDate are epoch-seconds Longs (null if the stock pays no dividend).
+     */
+    public Mono<Map<String, Object>> fetchDividendInfo(String symbol) {
+        return getCrumb().flatMap(crumb -> {
+            String uri = YF_QUOTE
+                    + "?symbols=" + urlEncode(symbol)
+                    + "&crumb=" + urlEncode(crumb)
+                    + "&fields=regularMarketPrice,financialCurrency,longName,"
+                    + "trailingAnnualDividendRate,trailingAnnualDividendYield,"
+                    + "exDividendDate,dividendDate";
+            return httpClient.get()
+                    .uri(uri)
+                    .header(HttpHeaders.ACCEPT, "application/json,*/*")
+                    .header("Referer", "https://finance.yahoo.com/")
+                    .header("Cookie", storedCookie.get())
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .map(body -> parseDividendResponse((Map<String, Object>) body, symbol))
+                    .onErrorResume(e -> {
+                        log.error("Dividend fetch failed for {}: {}", symbol, e.getMessage());
+                        return Mono.just(Map.of("symbol", symbol, "error", e.getMessage() != null ? e.getMessage() : "Fetch failed"));
+                    });
+        }).onErrorResume(e -> {
+            log.error("Dividend auth failed for {}: {}", symbol, e.getMessage());
+            return Mono.just(Map.of("symbol", symbol, "error", "Auth failed"));
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseDividendResponse(Map<String, Object> body, String symbol) {
+        try {
+            Map<String, Object> qr = (Map<String, Object>) body.get("quoteResponse");
+            if (qr == null) return errorMap(symbol, "No quoteResponse");
+
+            List<Map<String, Object>> results = (List<Map<String, Object>>) qr.get("result");
+            if (results == null || results.isEmpty()) {
+                // Symbol exists but no dividend data
+                return Map.of("symbol", symbol, "divRate", 0.0, "divYield", 0.0);
+            }
+
+            Map<String, Object> item = results.get(0);
+            Map<String, Object> out  = new HashMap<>();
+            out.put("symbol",   item.getOrDefault("symbol", symbol));
+            out.put("name",     item.getOrDefault("longName", symbol));
+            out.put("price",    round(toDouble(item.get("regularMarketPrice"))));
+            out.put("currency", item.getOrDefault("financialCurrency", "USD"));
+            out.put("divRate",  round(toDouble(item.get("trailingAnnualDividendRate"))));
+            // Yahoo yields are decimal fractions (0.015 = 1.5%) — multiply by 100
+            out.put("divYield", round(toDouble(item.get("trailingAnnualDividendYield")) * 100));
+            // Dates arrive as epoch-second Numbers; omit if absent
+            Object exDiv = item.get("exDividendDate");
+            Object divDt = item.get("dividendDate");
+            out.put("exDivDate", exDiv != null ? ((Number) exDiv).longValue() : null);
+            out.put("divDate",   divDt != null ? ((Number) divDt).longValue() : null);
+            return out;
+        } catch (Exception e) {
+            log.error("Dividend parse error for {}: {}", symbol, e.getMessage());
+            return errorMap(symbol, "Parse error: " + e.getMessage());
+        }
+    }
+
     // ── News ──────────────────────────────────────────────────────────────────
 
     /**
