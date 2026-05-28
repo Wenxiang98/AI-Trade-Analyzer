@@ -1708,7 +1708,7 @@ function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
                       ) : (
                         <button onClick={() => { setEditingTag(item.symbol); setTagInput(itemTag); }}
                           className="ml-2 text-[10px] mono px-1.5 py-0.5 rounded"
-                          style={{ background: itemTag ? COLORS.amber + '22' : 'transparent', color: itemTag ? COLORS.amber : COLORS.border, border: `1px solid ${itemTag ? COLORS.amber + '66' : 'transparent'}` }}>
+                          style={{ background: itemTag ? COLORS.amber + '22' : 'transparent', color: itemTag ? COLORS.amber : COLORS.textDim, border: `1px solid ${itemTag ? COLORS.amber + '66' : 'transparent'}` }}>
                           {itemTag || <Tag size={9} />}
                         </button>
                       )}
