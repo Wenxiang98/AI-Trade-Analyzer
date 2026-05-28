@@ -198,6 +198,7 @@ function TradeDesk({ session, profile, onSignOut }) {
   const [portfolioLoading, setPortfolioLoading] = useState(true);
   const [lastRefreshed,    setLastRefreshed]    = useState(null);
   const [autoRefreshMins,  setAutoRefreshMins]  = useState(() => storage.get('settings:autoRefresh', 5));
+  const [usdMyr,           setUsdMyr]           = useState(4.40);   // live USD/MYR rate, fallback 4.40
   const cashSaveRef    = useRef(null);
   const refreshFnRef   = useRef(null);
 
@@ -205,6 +206,14 @@ function TradeDesk({ session, profile, onSignOut }) {
   useEffect(() => { storage.set('settings:capital', capital); }, [capital]);
   useEffect(() => { storage.set('settings:riskPct', riskPct); }, [riskPct]);
   useEffect(() => { storage.set('settings:autoRefresh', autoRefreshMins); }, [autoRefreshMins]);
+
+  // Fetch live USD/MYR FX rate once on mount (frankfurter.app — free, no auth)
+  useEffect(() => {
+    fetch('https://api.frankfurter.app/latest?from=USD&to=MYR')
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.rates?.MYR) setUsdMyr(Math.round(d.rates.MYR * 100) / 100); })
+      .catch(() => {}); // keep 4.40 fallback on error
+  }, []);
 
   // ── Load all data from Supabase on login ───────────────────────────────────
   useEffect(() => {
@@ -354,9 +363,9 @@ function TradeDesk({ session, profile, onSignOut }) {
       }
       if (fired.length) setTriggeredAlerts(prev => [...prev, ...fired]);
 
-      // Save portfolio snapshot
-      const portfolioVal = currentHoldings.reduce((sum, h) => sum + h.qty * (updates[h.symbol] ?? h.currentPrice), 0);
-      const costBasis    = currentHoldings.reduce((sum, h) => sum + h.qty * h.avgCost, 0);
+      // Save portfolio snapshot (values in MYR — US holdings converted via live FX rate)
+      const portfolioVal = currentHoldings.reduce((sum, h) => sum + toMYR(h.symbol, h.qty * (updates[h.symbol] ?? h.currentPrice)), 0);
+      const costBasis    = currentHoldings.reduce((sum, h) => sum + toMYR(h.symbol, h.qty * h.avgCost), 0);
       await saveSnapshot(userId, { totalValue: portfolioVal + cash, portfolioValue: portfolioVal, cash, costBasis });
       const snap = {
         date:       new Date().toLocaleDateString('en-MY', { month: 'short', day: 'numeric' }),
@@ -369,10 +378,14 @@ function TradeDesk({ session, profile, onSignOut }) {
     setRefreshing(false);
   };
 
-  const portfolioValue = holdings.reduce((sum, h) => sum + h.qty * h.currentPrice, 0);
-  const totalCost = holdings.reduce((sum, h) => sum + h.qty * h.avgCost, 0);
-  const positionPL = portfolioValue - totalCost;
-  const totalAssets = portfolioValue + cash;
+  // Convert a USD value to MYR for non-Malaysian symbols
+  const toMYR = (symbol, val) =>
+    symbol?.toUpperCase().endsWith('.KL') ? val : val * usdMyr;
+
+  const portfolioValue = holdings.reduce((sum, h) => sum + toMYR(h.symbol, h.qty * h.currentPrice), 0);
+  const totalCost      = holdings.reduce((sum, h) => sum + toMYR(h.symbol, h.qty * h.avgCost), 0);
+  const positionPL     = portfolioValue - totalCost;
+  const totalAssets    = portfolioValue + cash;
 
   const tabs = [
     { id: 'dashboard',  label: 'Dashboard', icon: LayoutDashboard },
@@ -458,7 +471,7 @@ function TradeDesk({ session, profile, onSignOut }) {
           </div>
         ))}
 
-        {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} snapshots={snapshots} lastRefreshed={lastRefreshed} />}
+        {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} snapshots={snapshots} lastRefreshed={lastRefreshed} usdMyr={usdMyr} />}
         {tab === 'watchlist' && (
           <Watchlist
             items={watchlist}
@@ -622,7 +635,7 @@ function SettingsModal({ onClose, autoRefreshMins, onAutoRefreshChange }) {
 }
 
 // ===== DASHBOARD =====
-function Dashboard({ holdings, cash, totalAssets, positionPL, portfolioValue, setTab, snapshots = [], lastRefreshed }) {
+function Dashboard({ holdings, cash, totalAssets, positionPL, portfolioValue, setTab, snapshots = [], lastRefreshed, usdMyr = 4.40 }) {
   const [insight, setInsight] = useState('');
   const [loadingInsight, setLoadingInsight] = useState(false);
   const [error, setError] = useState('');
@@ -646,13 +659,15 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
   const pieData = holdings.map(h => ({ name: h.symbol, value: h.qty * h.currentPrice }));
   if (cash > 0) pieData.push({ name: 'Cash', value: cash });
 
+  const isUS = (sym) => !sym?.toUpperCase().endsWith('.KL');
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Total Assets" value={`RM ${totalAssets.toFixed(2)}`} sub="MYR" />
+        <StatCard label="Total Assets" value={`RM ${totalAssets.toFixed(2)}`} sub="MYR (all converted)" />
         <StatCard label="Market Value" value={`RM ${portfolioValue.toFixed(2)}`} sub={`${holdings.length} position${holdings.length !== 1 ? 's' : ''}`} />
-        <StatCard label="Position P/L" value={`${positionPL >= 0 ? '+' : ''}${positionPL.toFixed(2)}`} sub={portfolioValue > 0 ? `${((positionPL / (portfolioValue - positionPL)) * 100).toFixed(2)}%` : '—'} color={positionPL >= 0 ? COLORS.green : COLORS.red} />
-        <StatCard label="Cash" value={`RM ${cash.toFixed(2)}`} sub="Available" />
+        <StatCard label="Position P/L" value={`${positionPL >= 0 ? '+' : ''}RM ${Math.abs(positionPL).toFixed(2)}`} sub={portfolioValue > 0 && (portfolioValue - positionPL) > 0 ? `${positionPL >= 0 ? '+' : '-'}${Math.abs((positionPL / (portfolioValue - positionPL)) * 100).toFixed(2)}%` : '—'} color={positionPL >= 0 ? COLORS.green : COLORS.red} />
+        <StatCard label="USD / MYR" value={`${usdMyr.toFixed(2)}`} sub="Live FX rate" color={COLORS.blue} />
       </div>
 
       <Panel>
@@ -735,18 +750,26 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
           ) : (
             <div className="space-y-2">
               {holdings.map((h, i) => {
-                const pl = (h.currentPrice - h.avgCost) * h.qty;
-                const plPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
+                const fx   = isUS(h.symbol) ? usdMyr : 1;
+                const val  = h.qty * h.currentPrice * fx;
+                const cost = h.qty * h.avgCost * fx;
+                const pl   = val - cost;
+                const plPct = cost > 0 ? (pl / cost) * 100 : 0;
                 return (
                   <div key={i} className="flex items-center justify-between py-2 border-b last:border-0" style={{ borderColor: COLORS.border }}>
                     <div>
                       <div className="font-semibold text-sm">{h.symbol}</div>
-                      <div className="text-[11px] mono" style={{ color: COLORS.textDim }}>{h.qty} @ {h.avgCost}</div>
+                      <div className="text-[11px] mono" style={{ color: COLORS.textDim }}>
+                        {h.qty} @ {isUS(h.symbol) ? `$${h.avgCost}` : `RM${h.avgCost}`}
+                      </div>
                     </div>
                     <div className="text-right">
-                      <div className="mono text-sm">{(h.qty * h.currentPrice).toFixed(2)}</div>
+                      <div className="mono text-sm">RM {val.toFixed(2)}</div>
+                      {isUS(h.symbol) && (
+                        <div className="text-[10px] mono" style={{ color: COLORS.textDim }}>${(h.qty * h.currentPrice).toFixed(2)}</div>
+                      )}
                       <div className="text-[11px] mono" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>
-                        {pl >= 0 ? '+' : ''}{pl.toFixed(2)} ({plPct.toFixed(2)}%)
+                        {pl >= 0 ? '+' : ''}RM {Math.abs(pl).toFixed(2)} ({plPct >= 0 ? '+' : ''}{plPct.toFixed(2)}%)
                       </div>
                     </div>
                   </div>
@@ -756,7 +779,67 @@ Write a short (3-4 sentences) sharp market insight focused on: market sentiment 
           )}
         </Panel>
       </div>
+
+      <BenchmarkPanel positionPL={positionPL} portfolioValue={portfolioValue} />
     </div>
+  );
+}
+
+// ===== BENCHMARK PANEL =====
+function BenchmarkPanel({ positionPL, portfolioValue }) {
+  const [bm, setBm] = useState(null); // null = loading
+
+  useEffect(() => {
+    Promise.all([
+      fetch(`${API_BASE}/api/market/chart/VOO?range=1M`).then(r => r.ok ? r.json() : null),
+      fetch(`${API_BASE}/api/market/chart/SPY?range=1M`).then(r => r.ok ? r.json() : null),
+    ]).then(([voo, spy]) => {
+      const pct = (data) => {
+        const c = data?.candles;
+        if (!c || c.length < 2) return null;
+        const start = c[0].close, end = c[c.length - 1].close;
+        return Math.round(((end - start) / start) * 10000) / 100; // 2 dp
+      };
+      setBm({ voo: pct(voo), spy: pct(spy) });
+    }).catch(() => setBm({ voo: null, spy: null }));
+  }, []);
+
+  // Portfolio unrealised return % (cost basis vs current value)
+  const costBasis = portfolioValue - positionPL;
+  const portPct = costBasis > 0 ? Math.round((positionPL / costBasis) * 10000) / 100 : null;
+
+  const fmt = (v, pfx = '') =>
+    v == null ? '—' : `${v >= 0 ? '+' : ''}${pfx}${Math.abs(v).toFixed(2)}%`;
+
+  const col = (v) => v == null ? COLORS.textDim : v >= 0 ? COLORS.green : COLORS.red;
+
+  return (
+    <Panel>
+      <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2">
+        <TrendingUp size={14} style={{ color: COLORS.blue }} /> vs Benchmark (1 Month)
+      </h3>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="text-center p-3 rounded" style={{ background: COLORS.panelLight }}>
+          <div className="text-[10px] mono uppercase tracking-wider mb-1" style={{ color: COLORS.textDim }}>Your Portfolio</div>
+          <div className="mono text-2xl font-bold" style={{ color: col(portPct) }}>{fmt(portPct)}</div>
+          <div className="text-[10px] mono mt-1" style={{ color: COLORS.textDim }}>unrealised</div>
+        </div>
+        <div className="text-center p-3 rounded" style={{ background: COLORS.panelLight }}>
+          <div className="text-[10px] mono uppercase tracking-wider mb-1" style={{ color: COLORS.textDim }}>VOO</div>
+          <div className="mono text-2xl font-bold" style={{ color: col(bm?.voo ?? null) }}>
+            {bm === null ? <Loader2 size={16} className="animate-spin mx-auto" /> : fmt(bm.voo)}
+          </div>
+          <div className="text-[10px] mono mt-1" style={{ color: COLORS.textDim }}>S&amp;P 500 ETF</div>
+        </div>
+        <div className="text-center p-3 rounded" style={{ background: COLORS.panelLight }}>
+          <div className="text-[10px] mono uppercase tracking-wider mb-1" style={{ color: COLORS.textDim }}>SPY</div>
+          <div className="mono text-2xl font-bold" style={{ color: col(bm?.spy ?? null) }}>
+            {bm === null ? <Loader2 size={16} className="animate-spin mx-auto" /> : fmt(bm.spy)}
+          </div>
+          <div className="text-[10px] mono mt-1" style={{ color: COLORS.textDim }}>S&amp;P 500 ETF</div>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -2190,6 +2273,96 @@ Respond as analyst. Direct, specific, practical. No fluff. Under 200 words unles
   );
 }
 
+// ===== P&L CALENDAR =====
+function PnlCalendar({ trades }) {
+  const now = new Date();
+  const [view, setView] = useState({ year: now.getFullYear(), month: now.getMonth() });
+
+  // Sum P/L per date string "YYYY-MM-DD"
+  const byDate = {};
+  trades.forEach(t => {
+    if (t.date) byDate[t.date] = (byDate[t.date] || 0) + (t.pnl || 0);
+  });
+
+  const { year, month } = view;
+  const firstDow   = new Date(year, month, 1).getDay();   // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthLabel = new Date(year, month, 1).toLocaleString('en-MY', { month: 'long', year: 'numeric' });
+
+  const prev = () => { const d = new Date(year, month - 1, 1); setView({ year: d.getFullYear(), month: d.getMonth() }); };
+  const next = () => { const d = new Date(year, month + 1, 1); setView({ year: d.getFullYear(), month: d.getMonth() }); };
+
+  // Build flat cell array: null = empty leading slot, or { day, pnl }
+  const cells = [
+    ...Array(firstDow).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => {
+      const d   = i + 1;
+      const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      return { day: d, pnl: byDate[key] ?? null };
+    }),
+  ];
+  // Pad to complete last row
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  return (
+    <Panel>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="serif text-base font-semibold">P&amp;L Calendar</h3>
+        <div className="flex items-center gap-2">
+          <button onClick={prev} className="px-2 py-1 rounded text-xs" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>‹</button>
+          <span className="text-sm mono min-w-[120px] text-center">{monthLabel}</span>
+          <button onClick={next} className="px-2 py-1 rounded text-xs" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>›</button>
+        </div>
+      </div>
+
+      {/* Day-of-week headers */}
+      <div className="grid grid-cols-7 gap-1 mb-1">
+        {DOW.map(d => (
+          <div key={d} className="text-center text-[10px] mono py-1" style={{ color: COLORS.textDim }}>{d}</div>
+        ))}
+      </div>
+
+      {/* Calendar grid */}
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((cell, i) => {
+          if (!cell) return <div key={i} className="rounded" style={{ minHeight: 44 }} />;
+          const hasTrade = cell.pnl !== null;
+          const bg = !hasTrade ? COLORS.panelLight
+            : cell.pnl > 0  ? 'rgba(16,185,129,0.18)'
+            : cell.pnl < 0  ? 'rgba(239,68,68,0.18)'
+            : COLORS.panelLight;
+          const tc = !hasTrade ? COLORS.textDim
+            : cell.pnl > 0  ? COLORS.green
+            : cell.pnl < 0  ? COLORS.red
+            : COLORS.textDim;
+          return (
+            <div key={i} className="rounded p-1 flex flex-col items-center justify-start" style={{ background: bg, minHeight: 44 }}>
+              <span className="text-[11px] mono font-semibold" style={{ color: tc }}>{cell.day}</span>
+              {hasTrade && (
+                <span className="text-[9px] mono leading-tight mt-0.5" style={{ color: tc }}>
+                  {cell.pnl >= 0 ? '+' : ''}{cell.pnl.toFixed(0)}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center gap-4 mt-3">
+        <div className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textDim }}>
+          <div className="w-3 h-3 rounded" style={{ background: 'rgba(16,185,129,0.3)' }} /> Profit day
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px]" style={{ color: COLORS.textDim }}>
+          <div className="w-3 h-3 rounded" style={{ background: 'rgba(239,68,68,0.3)' }} /> Loss day
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
 // ===== JOURNAL =====
 function Journal({ trades, onAddTrade, onRemoveTrade }) {
   const [showAdd, setShowAdd] = useState(false);
@@ -2230,6 +2403,7 @@ function Journal({ trades, onAddTrade, onRemoveTrade }) {
         <StatCard label="Win Rate" value={`${winRate}%`} sub={`${wins} wins`} color={parseFloat(winRate) >= 50 ? COLORS.green : COLORS.amber} />
         <StatCard label="Total P/L" value={`${totalPL >= 0 ? '+' : ''}${totalPL.toFixed(2)}`} sub="RM" color={totalPL >= 0 ? COLORS.green : COLORS.red} />
       </div>
+      <PnlCalendar trades={trades} />
       <Panel>
         <div className="flex items-center justify-between mb-4">
           <h2 className="serif text-lg font-semibold">Trading Journal</h2>
