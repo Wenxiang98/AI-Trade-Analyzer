@@ -54,6 +54,18 @@ public class MarketDataController {
     }
 
     /**
+     * Batch screener — returns enriched fundamentals for any mix of symbols.
+     * Always uses Yahoo Finance (works for US + Bursa) — max ~50 symbols per call.
+     * GET /api/market/screener?symbols=1155.KL,VOO,AAPL,MSFT
+     */
+    @GetMapping("/screener")
+    public Mono<List<Map<String, Object>>> getScreenerData(@RequestParam String symbols) {
+        List<String> symbolList = Arrays.stream(symbols.split(","))
+                .map(String::trim).map(String::toUpperCase).filter(s -> !s.isEmpty()).toList();
+        return marketDataService.fetchScreener(symbolList);
+    }
+
+    /**
      * Dividend info for a stock: divRate, divYield, exDivDate, divDate.
      * GET /api/market/dividend/AAPL
      * GET /api/market/dividend/5176.KL

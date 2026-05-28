@@ -72,6 +72,16 @@ public class MarketDataService {
         return yahooFinanceService.fetchChartData(normalized, range);
     }
 
+    /**
+     * Screener batch — always routes through Yahoo Finance so we get fundamentals
+     * (P/E, market cap, 52-week range) for both US and Bursa symbols in one call.
+     */
+    public Mono<List<Map<String, Object>>> fetchScreener(List<String> symbols) {
+        List<String> normalized = symbols.stream().map(this::normalize).toList();
+        log.info("Screener batch for {} symbols", normalized.size());
+        return yahooFinanceService.fetchScreenerBatch(normalized);
+    }
+
     public Mono<Map<String, Object>> fetchDividendInfo(String symbol) {
         String normalized = normalize(symbol);
         log.info("Dividend info request: {} → {}", symbol, normalized);

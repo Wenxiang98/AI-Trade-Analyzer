@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { createChart, CandlestickSeries, LineSeries, HistogramSeries, createSeriesMarkers } from 'lightweight-charts';
-import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye, Newspaper, DollarSign, Activity, Printer } from 'lucide-react';
+import { TrendingUp, Wallet, Search, Calculator, MessageSquare, BookOpen, LayoutDashboard, Plus, Trash2, Send, Loader2, AlertTriangle, Target, Shield, Zap, RefreshCw, X, Settings, LogOut, Eye, Newspaper, DollarSign, Activity, Printer, Filter, Tag } from 'lucide-react';
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip, LineChart, Line, XAxis, YAxis, CartesianGrid } from 'recharts';
 import { supabase, getProfile, updateApiKey, getPortfolio, addHolding, removeHolding, updateHoldingPrice, replacePortfolio, saveCash, getJournalTrades, addJournalTrade, removeJournalTrade, getAlerts, addAlert, removeAlert, markAlertTriggered, saveSnapshot, getSnapshots, getWatchlist, addToWatchlist, removeFromWatchlist } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
@@ -393,6 +393,7 @@ function TradeDesk({ session, profile, onSignOut }) {
     { id: 'analyzer',   label: 'Analyzer',  icon: Search },
     { id: 'portfolio',  label: 'Portfolio', icon: Wallet },
     { id: 'dividends',  label: 'Dividends', icon: DollarSign },
+    { id: 'screener',   label: 'Screener',  icon: Filter },
     { id: 'sizing',     label: 'Sizing',    icon: Calculator },
     { id: 'options',    label: 'Options',   icon: Activity },
     { id: 'chat',       label: 'AI Chat',   icon: MessageSquare },
@@ -504,6 +505,7 @@ function TradeDesk({ session, profile, onSignOut }) {
           />
         )}
         {tab === 'dividends' && <DividendTracker holdings={holdings} watchlist={watchlist} usdMyr={usdMyr} />}
+        {tab === 'screener'  && <Screener holdings={holdings} watchlist={watchlist} />}
         {tab === 'sizing' && <Sizing capital={capital} setCapital={setCapital} riskPct={riskPct} setRiskPct={setRiskPct} />}
         {tab === 'options' && <OptionsCalc />}
         {tab === 'chat' && <Chat holdings={holdings} capital={capital} cash={cash} userName={userName} />}
@@ -1503,7 +1505,22 @@ function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
   const [symbolResults,   setSymbolResults]   = useState([]);
   const [symbolSearching, setSymbolSearching] = useState(false);
   const [showSearch,      setShowSearch]      = useState(false);
+  const [tags,            setTags]            = useState(() => storage.get('watchlist:tags', {}));
+  const [editingTag,      setEditingTag]      = useState(null);  // symbol being tagged
+  const [tagInput,        setTagInput]        = useState('');
+  const [filterTag,       setFilterTag]       = useState('');    // '' = show all
   const searchTimeout = useRef(null);
+
+  const saveTag = (symbol, value) => {
+    const next = { ...tags, [symbol]: value.trim() };
+    if (!value.trim()) delete next[symbol];
+    setTags(next);
+    storage.set('watchlist:tags', next);
+    setEditingTag(null);
+  };
+
+  const allTags = [...new Set(Object.values(tags).filter(Boolean))].sort();
+  const visibleItems = filterTag ? items.filter(i => tags[i.symbol] === filterTag) : items;
 
   useEffect(() => { if (items.length > 0) fetchPrices(); }, [items.length]);
 
@@ -1576,6 +1593,17 @@ function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
           </div>
         </div>
 
+        {/* Tag filter bar — only shown when there are tags */}
+        {allTags.length > 0 && (
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            <Tag size={12} style={{ color: COLORS.textDim }} />
+            <button onClick={() => setFilterTag('')} className="px-2 py-0.5 rounded text-[11px] mono" style={{ background: filterTag === '' ? COLORS.blue : COLORS.panelLight, color: filterTag === '' ? '#fff' : COLORS.textDim, border: `1px solid ${filterTag === '' ? COLORS.blue : COLORS.border}` }}>All</button>
+            {allTags.map(t => (
+              <button key={t} onClick={() => setFilterTag(t === filterTag ? '' : t)} className="px-2 py-0.5 rounded text-[11px] mono" style={{ background: filterTag === t ? COLORS.amber + '33' : COLORS.panelLight, color: filterTag === t ? COLORS.amber : COLORS.textDim, border: `1px solid ${filterTag === t ? COLORS.amber : COLORS.border}` }}>{t}</button>
+            ))}
+          </div>
+        )}
+
         {/* Symbol search */}
         {showSearch && (
           <div className="mb-4 relative">
@@ -1619,21 +1647,41 @@ function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
           </div>
         ) : (
           <div className="space-y-2">
-            {items.map(item => {
-              const price   = prices[item.symbol];
-              const scan    = scans[item.symbol];
+            {visibleItems.map(item => {
+              const price    = prices[item.symbol];
+              const scan     = scans[item.symbol];
               const isAdding = addingSymbol === item.symbol;
-              const vs      = scan && !scan.loading && scan.verdict ? verdictStyle(scan.verdict) : null;
+              const vs       = scan && !scan.loading && scan.verdict ? verdictStyle(scan.verdict) : null;
+              const itemTag  = tags[item.symbol] || '';
 
               return (
                 <div key={item.id}>
                   <div className="flex items-center justify-between px-3 py-2.5 rounded"
                     style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
-                    {/* Left: symbol + name */}
+                    {/* Left: symbol + name + tag */}
                     <div className="flex-1 min-w-0">
                       <span className="font-bold mono text-sm" style={{ color: COLORS.green }}>{item.symbol}</span>
                       <span className="text-xs ml-2 truncate" style={{ color: COLORS.text }}>{item.name}</span>
                       {item.exchange && <span className="text-[10px] mono ml-2" style={{ color: COLORS.textDim }}>{item.exchange}</span>}
+                      {/* Tag badge / inline editor */}
+                      {editingTag === item.symbol ? (
+                        <input
+                          autoFocus
+                          value={tagInput}
+                          onChange={e => setTagInput(e.target.value)}
+                          onBlur={() => saveTag(item.symbol, tagInput)}
+                          onKeyDown={e => { if (e.key === 'Enter') saveTag(item.symbol, tagInput); if (e.key === 'Escape') setEditingTag(null); }}
+                          placeholder="Tag (e.g. REIT)"
+                          className="ml-2 px-1.5 py-0.5 rounded text-[10px] mono outline-none w-20"
+                          style={{ background: COLORS.bg, border: `1px solid ${COLORS.amber}`, color: COLORS.text }}
+                        />
+                      ) : (
+                        <button onClick={() => { setEditingTag(item.symbol); setTagInput(itemTag); }}
+                          className="ml-2 text-[10px] mono px-1.5 py-0.5 rounded"
+                          style={{ background: itemTag ? COLORS.amber + '22' : 'transparent', color: itemTag ? COLORS.amber : COLORS.border, border: `1px solid ${itemTag ? COLORS.amber + '66' : 'transparent'}` }}>
+                          {itemTag || <Tag size={9} />}
+                        </button>
+                      )}
                     </div>
 
                     {/* Right: price + actions */}
@@ -2418,6 +2466,28 @@ function Journal({ trades, onAddTrade, onRemoveTrade }) {
         <StatCard label="Win Rate" value={`${winRate}%`} sub={`${wins} wins`} color={parseFloat(winRate) >= 50 ? COLORS.green : COLORS.amber} />
         <StatCard label="Total P/L" value={`${totalPL >= 0 ? '+' : ''}${totalPL.toFixed(2)}`} sub="RM" color={totalPL >= 0 ? COLORS.green : COLORS.red} />
       </div>
+      {trades.length >= 2 && (() => {
+        const sorted = [...trades].sort((a, b) => a.date.localeCompare(b.date));
+        let cum = 0;
+        const curveData = sorted.map(t => ({ label: t.date.slice(5), pnl: +(cum += t.pnl).toFixed(2) }));
+        return (
+          <Panel>
+            <h3 className="serif text-base font-semibold mb-3 flex items-center gap-2">
+              <TrendingUp size={14} style={{ color: totalPL >= 0 ? COLORS.green : COLORS.red }} /> Equity Curve
+            </h3>
+            <ResponsiveContainer width="100%" height={150}>
+              <LineChart data={curveData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+                <XAxis dataKey="label" tick={{ fontSize: 9, fill: COLORS.textDim }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 9, fill: COLORS.textDim }} width={52} tickFormatter={v => `${v >= 0 ? '+' : ''}${v.toFixed(0)}`} />
+                <Tooltip contentStyle={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, fontSize: 11 }}
+                  formatter={v => [`RM ${v >= 0 ? '+' : ''}${v}`, 'Cumulative P/L']} />
+                <Line type="monotone" dataKey="pnl" stroke={totalPL >= 0 ? COLORS.green : COLORS.red} strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </Panel>
+        );
+      })()}
       <PnlCalendar trades={trades} />
       <Panel>
         <div className="flex items-center justify-between mb-4">
@@ -2466,6 +2536,223 @@ function Journal({ trades, onAddTrade, onRemoveTrade }) {
           <button onClick={analyzePatterns} disabled={loadingPattern} className="flex items-center gap-1 text-xs px-3 py-1.5 rounded" style={{ color: COLORS.textDim, border: `1px solid ${COLORS.border}` }}>{loadingPattern ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Analyze</button>
         </div>
         {pattern ? <div className="text-sm leading-relaxed prose prose-invert prose-sm max-w-none"><ReactMarkdown>{pattern}</ReactMarkdown></div> : <p className="text-sm" style={{ color: COLORS.textDim }}>Log at least 3 trades, then analyze.</p>}
+      </Panel>
+    </div>
+  );
+}
+
+// ===== STOCK SCREENER =====
+const SCREENER_UNIVERSE = [
+  // Bursa Malaysia (most liquid)
+  '1155.KL','1023.KL','1295.KL','5347.KL','4197.KL',
+  '6888.KL','6012.KL','3182.KL','4715.KL','5176.KL',
+  '1066.KL','5819.KL','6033.KL','3034.KL','5285.KL',
+  '6742.KL','7277.KL','5182.KL',
+  // US ETFs + mega-caps
+  'VOO','SPY','QQQ','VTI','AAPL','MSFT','NVDA','GOOGL',
+];
+
+function fmtCap(v) {
+  if (!v) return '—';
+  if (v >= 1e12) return `${(v / 1e12).toFixed(2)}T`;
+  if (v >= 1e9)  return `${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6)  return `${(v / 1e6).toFixed(0)}M`;
+  return String(v);
+}
+
+function Screener({ holdings, watchlist }) {
+  const [rows,     setRows]     = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [loaded,   setLoaded]   = useState(false);
+  const [universe, setUniverse] = useState('preset');
+  const [sortKey,  setSortKey]  = useState('changePct');
+  const [sortDir,  setSortDir]  = useState('desc');
+  const [filters,  setFilters]  = useState({ market: 'all', minYield: '', maxPE: '', minChange: '' });
+  const setF = (k, v) => setFilters(p => ({ ...p, [k]: v }));
+
+  const getSymbols = () => {
+    const hold = holdings.map(h => h.symbol);
+    const watch = watchlist.map(w => w.symbol);
+    if (universe === 'portfolio') return hold;
+    if (universe === 'watchlist') return watch;
+    if (universe === 'all')       return [...new Set([...SCREENER_UNIVERSE, ...hold, ...watch])];
+    return SCREENER_UNIVERSE;
+  };
+
+  const scan = async () => {
+    const syms = getSymbols();
+    if (!syms.length) return;
+    setLoading(true);
+    try {
+      // chunk to avoid URL length issues (30 per request)
+      const chunks = [];
+      for (let i = 0; i < syms.length; i += 30) chunks.push(syms.slice(i, i + 30));
+      const all = (await Promise.all(
+        chunks.map(c =>
+          fetch(`${API_BASE}/api/market/screener?symbols=${c.join(',')}`)
+            .then(r => r.ok ? r.json() : []).catch(() => [])
+        )
+      )).flat();
+      setRows(all
+        .filter(r => r.price > 0)
+        .map(r => ({
+          ...r,
+          w52Pos: r.w52High > r.w52Low
+            ? Math.round((r.price - r.w52Low) / (r.w52High - r.w52Low) * 100)
+            : null,
+        }))
+      );
+      setLoaded(true);
+    } catch (e) { console.error('Screener error:', e); }
+    setLoading(false);
+  };
+
+  const toggleSort = (key) => {
+    if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortKey(key); setSortDir('desc'); }
+  };
+
+  const filtered = rows.filter(r => {
+    if (filters.market === 'my' && !r.symbol.endsWith('.KL'))  return false;
+    if (filters.market === 'us' &&  r.symbol.endsWith('.KL'))  return false;
+    if (filters.minYield && r.divYield < parseFloat(filters.minYield))     return false;
+    if (filters.maxPE    && r.pe > 0 && r.pe > parseFloat(filters.maxPE)) return false;
+    if (filters.minChange && r.changePct < parseFloat(filters.minChange))  return false;
+    return true;
+  }).sort((a, b) => {
+    const va = a[sortKey] ?? -Infinity, vb = b[sortKey] ?? -Infinity;
+    return sortDir === 'asc' ? va - vb : vb - va;
+  });
+
+  const TH = ({ label, k, cls = '' }) => (
+    <th onClick={() => toggleSort(k)}
+      className={`text-left pb-2 pr-3 text-[10px] mono uppercase tracking-wider cursor-pointer select-none ${cls}`}
+      style={{ color: sortKey === k ? COLORS.text : COLORS.textDim }}>
+      {label}{sortKey === k ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+    </th>
+  );
+
+  return (
+    <div className="space-y-4">
+      <Panel>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="serif text-lg font-semibold flex items-center gap-2">
+            <Filter size={16} style={{ color: COLORS.blue }} /> Stock Screener
+          </h2>
+          <button onClick={scan} disabled={loading}
+            className="flex items-center gap-1 text-sm px-4 py-1.5 rounded font-semibold disabled:opacity-50"
+            style={{ background: COLORS.green, color: '#000' }}>
+            {loading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            {loading ? 'Scanning…' : 'Scan'}
+          </button>
+        </div>
+
+        {/* Universe + filter controls */}
+        <div className="flex flex-wrap items-end gap-3 mb-4 pb-4" style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+          <div>
+            <div className="text-[10px] mono uppercase mb-1" style={{ color: COLORS.textDim }}>Universe</div>
+            <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+              {[['preset','Top 26'],['portfolio','Portfolio'],['watchlist','Watchlist'],['all','All']].map(([id, lbl]) => (
+                <button key={id} onClick={() => setUniverse(id)} className="px-3 py-1.5 text-xs mono"
+                  style={{ background: universe === id ? COLORS.blue : COLORS.panelLight, color: universe === id ? '#fff' : COLORS.textDim }}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] mono uppercase mb-1" style={{ color: COLORS.textDim }}>Market</div>
+            <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${COLORS.border}` }}>
+              {[['all','All'],['my','Bursa'],['us','US']].map(([id, lbl]) => (
+                <button key={id} onClick={() => setF('market', id)} className="px-3 py-1.5 text-xs mono"
+                  style={{ background: filters.market === id ? COLORS.blue : COLORS.panelLight, color: filters.market === id ? '#fff' : COLORS.textDim }}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+          {[
+            ['minYield', 'Min Yield %', 'e.g. 3'],
+            ['maxPE',    'Max P/E',     'e.g. 25'],
+            ['minChange','Min Change %','e.g. -5'],
+          ].map(([k, lbl, ph]) => (
+            <div key={k}>
+              <div className="text-[10px] mono uppercase mb-1" style={{ color: COLORS.textDim }}>{lbl}</div>
+              <input type="number" value={filters[k]} onChange={e => setF(k, e.target.value)}
+                placeholder={ph} className="px-3 py-1.5 rounded mono text-sm w-24 outline-none"
+                style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }} />
+            </div>
+          ))}
+        </div>
+
+        {/* Empty/loading states */}
+        {!loaded && !loading && (
+          <div className="py-10 text-center" style={{ color: COLORS.textDim }}>
+            <Filter size={32} className="mx-auto mb-3 opacity-20" />
+            <p className="text-sm">Select a universe and click Scan</p>
+            <p className="text-xs mt-1" style={{ color: COLORS.textDim }}>Screener pulls P/E, yield, market cap, 52-week range for all symbols</p>
+          </div>
+        )}
+        {loaded && filtered.length === 0 && (
+          <p className="text-sm py-6 text-center" style={{ color: COLORS.textDim }}>No stocks match your filters.</p>
+        )}
+
+        {/* Results table */}
+        {loaded && filtered.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${COLORS.border}` }}>
+                  <TH label="Symbol"    k="symbol" />
+                  <TH label="Price"     k="price" />
+                  <TH label="Chg %"     k="changePct" />
+                  <TH label="Yield %"   k="divYield" />
+                  <TH label="P/E"       k="pe" />
+                  <TH label="Mkt Cap"   k="marketCap" />
+                  <TH label="52W Pos"   k="w52Pos"    cls="hidden md:table-cell" />
+                  <TH label="Volume"    k="volume"    cls="hidden lg:table-cell" />
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(r => {
+                  const isMY = r.symbol.endsWith('.KL');
+                  const cur  = isMY ? 'RM' : '$';
+                  return (
+                    <tr key={r.symbol} className="border-b" style={{ borderColor: COLORS.border }}>
+                      <td className="py-2.5 pr-3">
+                        <div className="font-bold mono text-sm" style={{ color: COLORS.green }}>{r.symbol}</div>
+                        <div className="text-[10px] mono max-w-[110px] truncate" style={{ color: COLORS.textDim }}>{r.name}</div>
+                      </td>
+                      <td className="py-2.5 pr-3 mono text-sm">{cur}{r.price}</td>
+                      <td className="py-2.5 pr-3 mono text-sm font-semibold" style={{ color: r.changePct >= 0 ? COLORS.green : COLORS.red }}>
+                        {r.changePct >= 0 ? '+' : ''}{r.changePct}%
+                      </td>
+                      <td className="py-2.5 pr-3 mono text-sm" style={{ color: r.divYield > 0 ? COLORS.green : COLORS.textDim }}>
+                        {r.divYield > 0 ? `${r.divYield.toFixed(2)}%` : '—'}
+                      </td>
+                      <td className="py-2.5 pr-3 mono text-sm" style={{ color: r.pe > 0 ? COLORS.text : COLORS.textDim }}>
+                        {r.pe > 0 ? r.pe.toFixed(1) : '—'}
+                      </td>
+                      <td className="py-2.5 pr-3 mono text-xs">{fmtCap(r.marketCap)}</td>
+                      <td className="py-2.5 pr-3 hidden md:table-cell">
+                        {r.w52Pos !== null ? (
+                          <div className="flex items-center gap-1.5">
+                            <div className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: COLORS.border, minWidth: 56 }}>
+                              <div className="h-full rounded-full" style={{ width: `${r.w52Pos}%`, background: r.w52Pos > 70 ? COLORS.green : r.w52Pos < 30 ? COLORS.red : COLORS.amber }} />
+                            </div>
+                            <span className="text-[10px] mono w-7 text-right" style={{ color: COLORS.textDim }}>{r.w52Pos}%</span>
+                          </div>
+                        ) : <span style={{ color: COLORS.textDim }}>—</span>}
+                      </td>
+                      <td className="py-2.5 mono text-xs hidden lg:table-cell" style={{ color: COLORS.textDim }}>
+                        {fmtCap(r.volume)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="text-[10px] mt-2 mono" style={{ color: COLORS.textDim }}>
+              {filtered.length} of {rows.length} results · 52W Pos = % position in 52-week range · click headers to sort
+            </p>
+          </div>
+        )}
       </Panel>
     </div>
   );

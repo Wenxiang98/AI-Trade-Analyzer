@@ -463,6 +463,87 @@ public class YahooFinanceService {
         return map;
     }
 
+    // ── Screener batch ────────────────────────────────────────────────────────
+
+    /**
+     * Batch screener fetch — returns enriched fundamentals for any mix of symbols.
+     * Always routes through Yahoo Finance (works for both US and Bursa).
+     * Returns [{ symbol, name, price, change, changePct, volume, avgVolume,
+     *            pe, pb, marketCap, w52High, w52Low, divYield, currency }]
+     */
+    public Mono<List<Map<String, Object>>> fetchScreenerBatch(List<String> symbols) {
+        if (symbols.isEmpty()) return Mono.just(Collections.emptyList());
+        return getCrumb().flatMap(crumb -> fetchScreenerWithCrumb(symbols, crumb))
+                .onErrorResume(e -> {
+                    log.error("Screener batch failed: {}", e.getMessage());
+                    return Mono.just(Collections.emptyList());
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private Mono<List<Map<String, Object>>> fetchScreenerWithCrumb(List<String> symbols, String crumb) {
+        String uri = YF_QUOTE
+                + "?symbols=" + String.join(",", symbols)
+                + "&crumb=" + urlEncode(crumb)
+                + "&fields=regularMarketPrice,regularMarketChange,regularMarketChangePercent,"
+                + "regularMarketVolume,averageDailyVolume3Month,trailingPE,priceToBook,"
+                + "marketCap,fiftyTwoWeekHigh,fiftyTwoWeekLow,"
+                + "trailingAnnualDividendYield,financialCurrency,longName";
+
+        return httpClient.get()
+                .uri(uri)
+                .header(HttpHeaders.ACCEPT, "application/json,*/*")
+                .header("Referer", "https://finance.yahoo.com/")
+                .header("Cookie", storedCookie.get())
+                .retrieve()
+                .bodyToMono(Map.class)
+                .map(body -> parseScreenerResponse((Map<String, Object>) body))
+                .onErrorResume(e -> {
+                    if (e.getMessage() != null && e.getMessage().contains("401")) {
+                        log.warn("Screener 401 — refreshing crumb and retrying");
+                        storedCrumb.set("");
+                        return refreshCrumb().flatMap(nc -> fetchScreenerWithCrumb(symbols, nc));
+                    }
+                    log.error("Screener fetch failed: {}", e.getMessage());
+                    return Mono.just(Collections.emptyList());
+                });
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> parseScreenerResponse(Map<String, Object> body) {
+        try {
+            Map<String, Object> qr = (Map<String, Object>) body.get("quoteResponse");
+            if (qr == null) return Collections.emptyList();
+            List<Map<String, Object>> results = (List<Map<String, Object>>) qr.get("result");
+            if (results == null) return Collections.emptyList();
+
+            return results.stream().map(item -> {
+                Map<String, Object> out = new HashMap<>();
+                out.put("symbol",    item.getOrDefault("symbol", ""));
+                out.put("name",      item.getOrDefault("longName", item.getOrDefault("symbol", "")));
+                out.put("price",     round(toDouble(item.get("regularMarketPrice"))));
+                out.put("change",    round(toDouble(item.get("regularMarketChange"))));
+                out.put("changePct", round(toDouble(item.get("regularMarketChangePercent"))));
+                Number vol = (Number) item.get("regularMarketVolume");
+                Number avol = (Number) item.get("averageDailyVolume3Month");
+                Number cap  = (Number) item.get("marketCap");
+                out.put("volume",    vol  != null ? vol.longValue()  : 0L);
+                out.put("avgVolume", avol != null ? avol.longValue() : 0L);
+                out.put("marketCap", cap  != null ? cap.longValue()  : 0L);
+                out.put("pe",        round(toDouble(item.get("trailingPE"))));
+                out.put("pb",        round(toDouble(item.get("priceToBook"))));
+                out.put("w52High",   round(toDouble(item.get("fiftyTwoWeekHigh"))));
+                out.put("w52Low",    round(toDouble(item.get("fiftyTwoWeekLow"))));
+                out.put("divYield",  round(toDouble(item.get("trailingAnnualDividendYield")) * 100));
+                out.put("currency",  item.getOrDefault("financialCurrency", "USD"));
+                return out;
+            }).collect(Collectors.toList());
+        } catch (Exception e) {
+            log.error("Screener parse error: {}", e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
     // ── Dividend info ─────────────────────────────────────────────────────────
 
     /**
