@@ -185,8 +185,8 @@ function TradeDesk({ session, profile, onSignOut }) {
   const [tab,              setTab]              = useState('dashboard');
   const [holdings,         setHoldings]         = useState([]);
   const [cash,             setCash]             = useState(0);
-  const [capital,          setCapital]          = useState(() => storage.get('settings:capital', 1000));
-  const [riskPct,          setRiskPct]          = useState(() => storage.get('settings:riskPct', 2));
+  const [capital,          setCapital]          = useState(() => storage.get(`settings:capital:${userId}`, 1000));
+  const [riskPct,          setRiskPct]          = useState(() => storage.get(`settings:riskPct:${userId}`, 2));
   const [trades,           setTrades]           = useState([]);
   const [alerts,           setAlerts]           = useState([]);
   const [snapshots,        setSnapshots]        = useState([]);
@@ -197,16 +197,16 @@ function TradeDesk({ session, profile, onSignOut }) {
   const [refreshing,       setRefreshing]       = useState(false);
   const [portfolioLoading, setPortfolioLoading] = useState(true);
   const [lastRefreshed,    setLastRefreshed]    = useState(null);
-  const [autoRefreshMins,  setAutoRefreshMins]  = useState(() => storage.get('settings:autoRefresh', 5));
+  const [autoRefreshMins,  setAutoRefreshMins]  = useState(() => storage.get(`settings:autoRefresh:${userId}`, 5));
   const [usdMyr,           setUsdMyr]           = useState(4.40);   // live USD/MYR rate, fallback 4.40
   const [dailyLog,         setDailyLog]         = useState([]);
   const cashSaveRef    = useRef(null);
   const refreshFnRef   = useRef(null);
 
-  // ── Settings in localStorage (device-specific) ────────────────────────────
-  useEffect(() => { storage.set('settings:capital', capital); }, [capital]);
-  useEffect(() => { storage.set('settings:riskPct', riskPct); }, [riskPct]);
-  useEffect(() => { storage.set('settings:autoRefresh', autoRefreshMins); }, [autoRefreshMins]);
+  // ── Settings in localStorage (per-user, keyed by userId) ─────────────────
+  useEffect(() => { storage.set(`settings:capital:${userId}`, capital); }, [capital]);
+  useEffect(() => { storage.set(`settings:riskPct:${userId}`, riskPct); }, [riskPct]);
+  useEffect(() => { storage.set(`settings:autoRefresh:${userId}`, autoRefreshMins); }, [autoRefreshMins]);
 
   // Fetch live USD/MYR FX rate once on mount (frankfurter.app — free, no auth)
   useEffect(() => {
@@ -499,6 +499,7 @@ function TradeDesk({ session, profile, onSignOut }) {
         {tab === 'dashboard' && <Dashboard holdings={holdings} cash={cash} totalAssets={totalAssets} positionPL={positionPL} portfolioValue={portfolioValue} setTab={setTab} snapshots={snapshots} lastRefreshed={lastRefreshed} usdMyr={usdMyr} />}
         {tab === 'watchlist' && (
           <Watchlist
+            userId={userId}
             items={watchlist}
             onAdd={handleAddToWatchlist}
             onRemove={handleRemoveFromWatchlist}
@@ -1525,7 +1526,7 @@ Respond with ONLY a single valid JSON object. No markdown. No text outside JSON.
 }
 
 // ===== WATCHLIST =====
-function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
+function Watchlist({ userId, items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
   const [prices,          setPrices]          = useState({});
   const [loadingPrices,   setLoadingPrices]   = useState(false);
   const [scans,           setScans]           = useState({});
@@ -1535,7 +1536,7 @@ function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
   const [symbolResults,   setSymbolResults]   = useState([]);
   const [symbolSearching, setSymbolSearching] = useState(false);
   const [showSearch,      setShowSearch]      = useState(false);
-  const [tags,            setTags]            = useState(() => storage.get('watchlist:tags', {}));
+  const [tags,            setTags]            = useState(() => storage.get(`watchlist:tags:${userId || 'anon'}`, {}));
   const [editingTag,      setEditingTag]      = useState(null);  // symbol being tagged
   const [tagInput,        setTagInput]        = useState('');
   const [filterTag,       setFilterTag]       = useState('');    // '' = show all
@@ -1545,7 +1546,7 @@ function Watchlist({ items, onAdd, onRemove, onAnalyze, onAddToPortfolio }) {
     const next = { ...tags, [symbol]: value.trim() };
     if (!value.trim()) delete next[symbol];
     setTags(next);
-    storage.set('watchlist:tags', next);
+    storage.set(`watchlist:tags:${userId || 'anon'}`, next);
     setEditingTag(null);
   };
 
@@ -2632,6 +2633,16 @@ function DailyLog({ entries, onUpsert, onDelete }) {
   const dnDays   = monthEnt.filter(e => e.amount < 0).length;
   const allTot   = entries.reduce((s, e) => s + e.amount, 0);
 
+  // Running balance chart data (sorted chronologically, cumulative)
+  const balanceChartData = entries.length >= 2
+    ? [...entries]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .reduce((acc, e) => {
+          const prev = acc.length > 0 ? acc[acc.length - 1].total : 0;
+          return [...acc, { date: e.date.slice(5), total: +(prev + e.amount).toFixed(2) }];
+        }, [])
+    : [];
+
   const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   return (
@@ -2769,6 +2780,25 @@ function DailyLog({ entries, onUpsert, onDelete }) {
         </Panel>
       </div>
 
+      {/* Balance trend chart (2+ entries) */}
+      {balanceChartData.length >= 2 && (
+        <Panel>
+          <h3 className="serif text-base font-semibold mb-3">Balance Trend</h3>
+          <ResponsiveContainer width="100%" height={160}>
+            <LineChart data={balanceChartData} margin={{ top: 5, right: 10, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={COLORS.border} />
+              <XAxis dataKey="date" tick={{ fontSize: 9, fill: COLORS.textDim }} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 9, fill: COLORS.textDim }} tickFormatter={v => `${v >= 0 ? '+' : ''}${v}`} width={48} />
+              <Tooltip
+                contentStyle={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, fontSize: 12 }}
+                formatter={v => [`RM ${v >= 0 ? '+' : ''}${v.toFixed(2)}`, 'Cumulative P/L']}
+              />
+              <Line type="monotone" dataKey="total" stroke={allTot >= 0 ? COLORS.green : COLORS.red} strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </Panel>
+      )}
+
       {/* Recent entries list */}
       {entries.length > 0 && (
         <Panel>
@@ -2811,10 +2841,13 @@ function fmtCap(v) {
   return String(v);
 }
 
+// Module-level cache — survives tab switches (component unmount/remount)
+let _screenerCache = { rows: [], loaded: false };
+
 function Screener({ holdings, watchlist }) {
-  const [rows,     setRows]     = useState([]);
+  const [rows,     setRows]     = useState(() => _screenerCache.rows);
   const [loading,  setLoading]  = useState(false);
-  const [loaded,   setLoaded]   = useState(false);
+  const [loaded,   setLoaded]   = useState(() => _screenerCache.loaded);
   const [universe, setUniverse] = useState('preset');
   const [sortKey,  setSortKey]  = useState('changePct');
   const [sortDir,  setSortDir]  = useState('desc');
@@ -2844,15 +2877,16 @@ function Screener({ holdings, watchlist }) {
             .then(r => r.ok ? r.json() : []).catch(() => [])
         )
       )).flat();
-      setRows(all
+      const processed = all
         .filter(r => r.price > 0)
         .map(r => ({
           ...r,
           w52Pos: r.w52High > r.w52Low
             ? Math.round((r.price - r.w52Low) / (r.w52High - r.w52Low) * 100)
             : null,
-        }))
-      );
+        }));
+      _screenerCache = { rows: processed, loaded: true };
+      setRows(processed);
       setLoaded(true);
     } catch (e) { console.error('Screener error:', e); }
     setLoading(false);
