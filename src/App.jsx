@@ -1687,13 +1687,31 @@ function Watchlist({ userId, items, onAdd, onRemove, onAnalyze, onAddToPortfolio
 
               return (
                 <div key={item.id}>
-                  <div className="flex items-center justify-between px-3 py-2.5 rounded"
+                  <div className="px-3 py-2.5 rounded"
                     style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
-                    {/* Left: symbol + name + tag */}
-                    <div className="flex-1 min-w-0">
-                      <span className="font-bold mono text-sm" style={{ color: COLORS.green }}>{item.symbol}</span>
-                      <span className="text-xs ml-2 truncate" style={{ color: COLORS.text }}>{item.name}</span>
-                      {item.exchange && <span className="text-[10px] mono ml-2" style={{ color: COLORS.textDim }}>{item.exchange}</span>}
+                    {/* Row 1: symbol (left) + price (right) */}
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-bold mono text-sm leading-tight" style={{ color: COLORS.green }}>{item.symbol}</span>
+                      {price ? (
+                        <div className="text-right flex-shrink-0">
+                          <div className="mono text-sm font-semibold leading-tight">{price.currency} {price.price}</div>
+                          <div className="mono text-[11px]" style={{ color: price.changePct >= 0 ? COLORS.green : COLORS.red }}>
+                            {price.changePct >= 0 ? '+' : ''}{price.changePct}%
+                          </div>
+                        </div>
+                      ) : loadingPrices ? (
+                        <Loader2 size={13} className="animate-spin mt-0.5 flex-shrink-0" style={{ color: COLORS.textDim }} />
+                      ) : null}
+                    </div>
+
+                    {/* Row 2: name + exchange */}
+                    <div className="mt-0.5 text-xs truncate" style={{ color: COLORS.text }}>
+                      {item.name}
+                      {item.exchange && <span className="mono ml-1.5 text-[10px]" style={{ color: COLORS.textDim }}>{item.exchange}</span>}
+                    </div>
+
+                    {/* Row 3: tag + verdict + actions */}
+                    <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                       {/* Tag badge / inline editor */}
                       {editingTag === item.symbol ? (
                         <input
@@ -1703,31 +1721,16 @@ function Watchlist({ userId, items, onAdd, onRemove, onAnalyze, onAddToPortfolio
                           onBlur={() => saveTag(item.symbol, tagInput)}
                           onKeyDown={e => { if (e.key === 'Enter') saveTag(item.symbol, tagInput); if (e.key === 'Escape') setEditingTag(null); }}
                           placeholder="Tag (e.g. REIT)"
-                          className="ml-2 px-1.5 py-0.5 rounded text-[10px] mono outline-none w-20"
+                          className="px-1.5 py-0.5 rounded text-[10px] mono outline-none w-20"
                           style={{ background: COLORS.bg, border: `1px solid ${COLORS.amber}`, color: COLORS.text }}
                         />
                       ) : (
                         <button onClick={() => { setEditingTag(item.symbol); setTagInput(itemTag); }}
-                          className="ml-2 text-[10px] mono px-1.5 py-0.5 rounded"
+                          className="text-[10px] mono px-1.5 py-0.5 rounded"
                           style={{ background: itemTag ? COLORS.amber + '22' : 'transparent', color: itemTag ? COLORS.amber : COLORS.textDim, border: `1px solid ${itemTag ? COLORS.amber + '66' : 'transparent'}` }}>
                           {itemTag || <Tag size={9} />}
                         </button>
                       )}
-                    </div>
-
-                    {/* Right: price + actions */}
-                    <div className="flex items-center gap-2 flex-shrink-0">
-                      {/* Price */}
-                      {price ? (
-                        <div className="text-right mr-1">
-                          <div className="mono text-sm font-semibold">{price.currency} {price.price}</div>
-                          <div className="mono text-[11px]" style={{ color: price.changePct >= 0 ? COLORS.green : COLORS.red }}>
-                            {price.changePct >= 0 ? '+' : ''}{price.changePct}%
-                          </div>
-                        </div>
-                      ) : loadingPrices ? (
-                        <Loader2 size={13} className="animate-spin mr-1" style={{ color: COLORS.textDim }} />
-                      ) : null}
 
                       {/* AI verdict badge */}
                       {vs && (
@@ -1747,23 +1750,22 @@ function Watchlist({ userId, items, onAdd, onRemove, onAnalyze, onAddToPortfolio
                       )}
                       {scan?.loading && <Loader2 size={13} className="animate-spin" style={{ color: COLORS.textDim }} />}
 
-                      {/* Analyze */}
-                      <button onClick={() => onAnalyze(item.symbol, item.name)}
-                        className="text-[11px] px-2 py-1 rounded"
-                        style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.blue}44`, color: COLORS.blue }}>
-                        Analyze →
-                      </button>
-
-                      {/* + Portfolio */}
-                      <button onClick={() => { setAddingSymbol(isAdding ? null : item.symbol); setPortfolioForm({ qty: '', avgCost: String(price?.price || '') }); }}
-                        className="text-[11px] px-2 py-1 rounded"
-                        style={{ background: isAdding ? COLORS.green : COLORS.panelLight, color: isAdding ? '#000' : COLORS.green, border: `1px solid ${COLORS.green}55` }}>
-                        + Port
-                      </button>
-
-                      <button onClick={() => onRemove(item.id)} className="opacity-40 hover:opacity-100 ml-1">
-                        <Trash2 size={13} />
-                      </button>
+                      {/* Analyze + Port + Delete pushed to right */}
+                      <div className="ml-auto flex items-center gap-1.5">
+                        <button onClick={() => onAnalyze(item.symbol, item.name)}
+                          className="text-[11px] px-2 py-1 rounded"
+                          style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.blue}44`, color: COLORS.blue }}>
+                          Analyze →
+                        </button>
+                        <button onClick={() => { setAddingSymbol(isAdding ? null : item.symbol); setPortfolioForm({ qty: '', avgCost: String(price?.price || '') }); }}
+                          className="text-[11px] px-2 py-1 rounded"
+                          style={{ background: isAdding ? COLORS.green : COLORS.panelLight, color: isAdding ? '#000' : COLORS.green, border: `1px solid ${COLORS.green}55` }}>
+                          + Port
+                        </button>
+                        <button onClick={() => onRemove(item.id)} className="opacity-40 hover:opacity-100">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -2079,42 +2081,44 @@ function Portfolio({ holdings, onAddHolding, onRemoveHolding, onUpdatePrice, onU
         ) : holdings.length === 0 ? (
           <p className="text-sm py-8 text-center" style={{ color: COLORS.textDim }}>No holdings. Add manually or import from MOOMOO CSV.</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-[11px] mono uppercase" style={{ color: COLORS.textDim, borderBottom: `1px solid ${COLORS.border}` }}>
-                  <th className="py-2">Symbol</th><th>Qty</th><th>Cost</th><th>Current</th><th>MV</th><th>P/L</th><th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {holdings.map((h) => {
-                  const mv    = h.qty * h.currentPrice;
-                  const pl    = (h.currentPrice - h.avgCost) * h.qty;
-                  const plPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
-                  return (
-                    <tr key={h.id} style={{ borderBottom: `1px solid ${COLORS.border}` }}>
-                      <td className="py-3 font-semibold">{h.symbol}</td>
-                      <td className="mono">{h.qty}</td>
-                      <td className="mono">{h.avgCost.toFixed(2)}</td>
-                      <td>
-                        <input
-                          type="number" step="0.01" value={h.currentPrice}
-                          onChange={e => onUpdatePrice(h.id, e.target.value)}
-                          onBlur={e => onUpdatePriceBlur(h.id, e.target.value)}
-                          className="w-20 px-1 py-0.5 rounded mono text-sm"
-                          style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
-                        />
-                      </td>
-                      <td className="mono">{mv.toFixed(2)}</td>
-                      <td className="mono" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>
-                        {pl >= 0 ? '+' : ''}{pl.toFixed(2)} <span className="text-[10px]">({plPct.toFixed(1)}%)</span>
-                      </td>
-                      <td><button onClick={() => onRemoveHolding(h.id)} className="opacity-50 hover:opacity-100"><Trash2 size={14} /></button></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="space-y-2">
+            {holdings.map((h) => {
+              const mv    = h.qty * h.currentPrice;
+              const pl    = (h.currentPrice - h.avgCost) * h.qty;
+              const plPct = ((h.currentPrice - h.avgCost) / h.avgCost) * 100;
+              return (
+                <div key={h.id} className="px-3 py-2.5 rounded" style={{ background: COLORS.panelLight, border: `1px solid ${COLORS.border}` }}>
+                  {/* Row 1: symbol + P/L */}
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-semibold mono text-sm">{h.symbol}</span>
+                    <span className="mono text-sm font-semibold" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>
+                      {pl >= 0 ? '+' : ''}{pl.toFixed(2)}
+                      <span className="text-[11px] ml-1" style={{ color: pl >= 0 ? COLORS.green : COLORS.red }}>({plPct.toFixed(1)}%)</span>
+                    </span>
+                  </div>
+                  {/* Row 2: qty × cost | current input | MV | trash */}
+                  <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                    <span className="text-[11px] mono" style={{ color: COLORS.textDim }}>{h.qty} × {h.avgCost.toFixed(2)}</span>
+                    <span className="text-[11px]" style={{ color: COLORS.border }}>|</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px]" style={{ color: COLORS.textDim }}>Now</span>
+                      <input
+                        type="number" step="0.01" value={h.currentPrice}
+                        onChange={e => onUpdatePrice(h.id, e.target.value)}
+                        onBlur={e => onUpdatePriceBlur(h.id, e.target.value)}
+                        className="w-20 px-1 py-0.5 rounded mono text-sm"
+                        style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, color: COLORS.text }}
+                      />
+                    </div>
+                    <span className="text-[11px]" style={{ color: COLORS.border }}>|</span>
+                    <span className="text-[11px] mono" style={{ color: COLORS.textDim }}>MV {mv.toFixed(2)}</span>
+                    <button onClick={() => onRemoveHolding(h.id)} className="ml-auto opacity-40 hover:opacity-100">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </Panel>
